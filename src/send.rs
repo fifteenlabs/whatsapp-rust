@@ -1251,10 +1251,23 @@ impl Client {
                 recipient_cached = self.get_devices_from_registry(&recipient_bare).await;
             }
 
-            let mut own_cached = self.get_devices_from_registry(own_jid).await;
+            // When the recipient is LID-addressed, look up own devices via our
+            // LID JID so all <to> nodes use consistent @lid addressing.
+            // The server rejects DM stanzas that mix @lid (recipient) and
+            // @s.whatsapp.net (own) participant JIDs with a 400 ACK.
+            let own_registry_jid = if recipient_bare.is_lid() {
+                device_snapshot
+                    .lid
+                    .as_ref()
+                    .map(|lid| lid.to_non_ad())
+                    .unwrap_or_else(|| own_jid.clone())
+            } else {
+                own_jid.clone()
+            };
+            let mut own_cached = self.get_devices_from_registry(&own_registry_jid).await;
             if own_cached.is_none() {
                 let _ = self.get_user_devices(std::slice::from_ref(own_jid)).await;
-                own_cached = self.get_devices_from_registry(own_jid).await;
+                own_cached = self.get_devices_from_registry(&own_registry_jid).await;
             }
 
             // Build device list, filter hosted in-place, reuse Vecs
@@ -1264,7 +1277,7 @@ impl Client {
                     devices
                 }
                 // No record at all — bare JID, server handles fanout
-                None => vec![recipient_bare],
+                None => vec![recipient_bare.clone()],
             };
 
             if let Some(mut own_devices) = own_cached {
@@ -1315,6 +1328,15 @@ impl Client {
 
             let mut stores = store_adapter.as_signal_stores();
 
+            // Use the LID JID as the stanza `to` when the recipient is LID-addressed.
+            // The server routes DMs by LID JID and echoes back with
+            // `from=sender_lid recipient=their_lid peer_recipient_pn=their_pn`.
+            let stanza_to_jid = if recipient_bare.is_lid() {
+                recipient_bare.clone()
+            } else {
+                to
+            };
+
             let prepared = wacore::send::prepare_dm_stanza(
                 &*self.runtime,
                 &mut stores,
@@ -1322,7 +1344,7 @@ impl Client {
                 own_jid,
                 device_snapshot.lid.as_ref(),
                 device_snapshot.account.as_ref(),
-                to,
+                stanza_to_jid,
                 message,
                 request_id,
                 edit,
