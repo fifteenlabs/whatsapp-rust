@@ -215,6 +215,28 @@ impl Client {
                     self.store_tc_token_candidate(candidate).await;
                 }
 
+                // Dispatch contact push names batch (fill-nulls-only at the app layer)
+                if !sync_result.contact_pushnames.is_empty() {
+                    log::info!(
+                        "History sync provided {} contact push names",
+                        sync_result.contact_pushnames.len()
+                    );
+                    self.core
+                        .event_bus
+                        .dispatch(Event::PushNameBatch(sync_result.contact_pushnames));
+                }
+
+                // Dispatch LID→PN mapping batch
+                if !sync_result.lid_pn_mappings.is_empty() {
+                    log::info!(
+                        "History sync provided {} LID→PN mappings",
+                        sync_result.lid_pn_mappings.len()
+                    );
+                    self.core
+                        .event_bus
+                        .dispatch(Event::LidPnBatch(sync_result.lid_pn_mappings));
+                }
+
                 // Dispatch a single event with the full decompressed blob
                 if let Some(decompressed) = sync_result.decompressed_bytes {
                     let lazy_hs = LazyHistorySync::new(

@@ -433,6 +433,11 @@ pub enum Event {
 
     PushNameUpdate(PushNameUpdate),
     SelfPushNameUpdated(SelfPushNameUpdated),
+    /// Batch of contact push names delivered once during initial HistorySync.
+    /// Each entry is (jid_string, push_name). Use as fallback — only fill NULLs.
+    PushNameBatch(Vec<(String, String)>),
+    /// LID→PN mappings from HistorySync field 15. Each entry is (lid_jid, pn_jid).
+    LidPnBatch(Vec<(String, String)>),
     PinUpdate(PinUpdate),
     MuteUpdate(MuteUpdate),
     ArchiveUpdate(ArchiveUpdate),

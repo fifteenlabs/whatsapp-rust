@@ -25,6 +25,12 @@ pub struct HistorySyncResult {
     /// The full decompressed protobuf blob, only retained when event
     /// listeners exist. Wrapped in `LazyHistorySync` for on-demand decoding.
     pub decompressed_bytes: Option<Bytes>,
+    /// Push names for all contacts from HistorySync field 7 (pushnames).
+    /// Each entry is (jid_string, push_name). Excludes own user.
+    pub contact_pushnames: Vec<(String, String)>,
+    /// LID→PN mappings from HistorySync field 15 (phoneNumberToLidMappings).
+    /// Each entry is (lid_jid, pn_jid).
+    pub lid_pn_mappings: Vec<(String, String)>,
 }
 
 mod wire_type {
@@ -66,6 +72,8 @@ pub fn process_history_sync(
         conversations_processed: 0,
         tc_token_candidates: Vec::new(),
         decompressed_bytes: if retain_blob { Some(buf.clone()) } else { None },
+        contact_pushnames: Vec::new(),
+        lid_pn_mappings: Vec::new(),
     };
 
     while pos < buf.len() {
@@ -90,23 +98,34 @@ pub fn process_history_sync(
             }
 
             // field 7 = pushnames (repeated, length-delimited).
-            // Uses `Option::is_some()` in the guard rather than an
-            // `if let` guard — the latter requires Rust 1.94+. The inner
-            // `if let` is the defensive complement: if the guard's
-            // invariant is ever weakened by a future refactor, we skip
-            // the arm body instead of panicking.
-            7 if own_user.is_some()
-                && result.own_pushname.is_none()
-                && wire_type_raw == wire_type::LENGTH_DELIMITED =>
-            {
+            7 if wire_type_raw == wire_type::LENGTH_DELIMITED => {
                 let (len, vlen) = read_varint(&buf[pos..])?;
                 pos += vlen;
                 let end = checked_end(pos, len, buf.len(), "pushname")?;
 
-                if let Some(own) = own_user
-                    && let Some(name) = extract_own_pushname(&buf[pos..end], own)
-                {
-                    result.own_pushname = Some(name);
+                if let Some((id, name)) = extract_pushname(&buf[pos..end]) {
+                    if own_user.is_some()
+                        && result.own_pushname.is_none()
+                        && id.as_str() == own_user.unwrap()
+                    {
+                        result.own_pushname = Some(name);
+                    } else {
+                        result.contact_pushnames.push((id, name));
+                    }
+                }
+                pos = end;
+            }
+
+            // field 15 = phoneNumberToLidMappings (repeated, length-delimited)
+            15 if wire_type_raw == wire_type::LENGTH_DELIMITED => {
+                use prost::Message as _;
+                let (len, vlen) = read_varint(&buf[pos..])?;
+                pos += vlen;
+                let end = checked_end(pos, len, buf.len(), "lid_pn_mapping")?;
+                if let Ok(m) = waproto::whatsapp::PhoneNumberToLidMapping::decode(&buf[pos..end]) {
+                    if let (Some(pn), Some(lid)) = (m.pn_jid, m.lid_jid) {
+                        result.lid_pn_mappings.push((lid, pn));
+                    }
                 }
                 pos = end;
             }
@@ -205,11 +224,11 @@ fn skip_field(wire_type: u32, buf: &[u8], pos: usize) -> Result<usize, HistorySy
 }
 
 /// Manual pushname parser — Pushname proto has fields: id (tag 1) and pushname (tag 2).
-/// Checks id first and only allocates the pushname string if id matches `own_user`.
-fn extract_own_pushname(data: &[u8], own_user: &str) -> Option<String> {
+/// Returns `(id, pushname)` for any entry; caller decides own vs contact.
+fn extract_pushname(data: &[u8]) -> Option<(String, String)> {
     let mut pos = 0;
-    let mut id_match = false;
-    let mut pushname: Option<String> = None;
+    let mut id: Option<String> = None;
+    let mut name: Option<String> = None;
 
     while pos < data.len() {
         let (tag, bytes_read) = read_varint(data.get(pos..)?).ok()?;
@@ -218,27 +237,20 @@ fn extract_own_pushname(data: &[u8], own_user: &str) -> Option<String> {
         let wt = (tag & 0x7) as u32;
 
         match field_number {
-            // id (tag 1, string)
             1 if wt == wire_type::LENGTH_DELIMITED => {
                 let (len, vlen) = read_varint(data.get(pos..)?).ok()?;
                 pos += vlen;
                 let len = usize::try_from(len).ok()?;
                 let end = pos.checked_add(len).filter(|&e| e <= data.len())?;
-                let id = std::str::from_utf8(data.get(pos..end)?).ok()?;
-                id_match = id == own_user;
-                if !id_match {
-                    return None; // wrong user, skip entirely
-                }
+                id = Some(std::str::from_utf8(data.get(pos..end)?).ok()?.to_string());
                 pos = end;
             }
-            // pushname (tag 2, string)
             2 if wt == wire_type::LENGTH_DELIMITED => {
                 let (len, vlen) = read_varint(data.get(pos..)?).ok()?;
                 pos += vlen;
                 let len = usize::try_from(len).ok()?;
                 let end = pos.checked_add(len).filter(|&e| e <= data.len())?;
-                let name = std::str::from_utf8(data.get(pos..end)?).ok()?;
-                pushname = Some(name.to_string());
+                name = Some(std::str::from_utf8(data.get(pos..end)?).ok()?.to_string());
                 pos = end;
             }
             _ => {
@@ -247,7 +259,7 @@ fn extract_own_pushname(data: &[u8], own_user: &str) -> Option<String> {
         }
     }
 
-    if id_match { pushname } else { None }
+    Some((id?, name?))
 }
 
 /// Prost partial decode — only tctoken fields, skips heavy `messages`.
