@@ -207,9 +207,11 @@ pub fn parse_message_info(
         }
     } else if from.matches_user_or_lid(own_jid, own_lid) {
         let recipient = attrs.optional_jid("recipient");
-        let chat = recipient
+        let recipient_alt = attrs.optional_jid("peer_recipient_pn");
+        let chat = recipient_alt
             .as_ref()
             .map(|r| r.to_non_ad())
+            .or_else(|| recipient.as_ref().map(|r| r.to_non_ad()))
             .unwrap_or_else(|| from.to_non_ad());
         // Populate sender_alt so LID-PN cache warms from self-messages
         let sender_alt = if from.server == Server::Lid {
@@ -224,6 +226,7 @@ pub fn parse_message_info(
             sender: from.clone(),
             is_from_me: true,
             recipient,
+            recipient_alt,
             sender_alt,
             ..Default::default()
         }
