@@ -1103,13 +1103,18 @@ impl Client {
             self.expected_disconnect.store(false, Ordering::Relaxed);
 
             if let Err(connect_err) = self.connect().await {
-                let is_transient = connect_err
-                    .downcast_ref::<crate::handshake::HandshakeError>()
-                    .is_some_and(|e| e.is_transient());
-                if is_transient {
-                    debug!("Transient connect failure, will retry: {connect_err:#}");
-                } else {
-                    error!("Failed to connect: {connect_err:#}. Will retry...");
+                match connect_err.downcast_ref::<crate::handshake::HandshakeError>() {
+                    Some(he) if he.is_transient() => {
+                        debug!("Transient connect failure, will retry: {connect_err:#}");
+                    }
+                    Some(_) => {
+                        error!("Failed to connect: {connect_err:#}. Will retry...");
+                    }
+                    // Pre-handshake failures (transport connect, version fetch,
+                    // timeout) are inherently transient network errors.
+                    None => {
+                        warn!("Failed to connect: {connect_err:#}. Will retry...");
+                    }
                 }
             } else {
                 let unexpected_disconnect = if self.read_messages_loop().await.is_err() {
