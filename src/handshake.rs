@@ -38,8 +38,6 @@ pub enum HandshakeError {
     StreamClosed,
     #[error("Disconnected during handshake")]
     Disconnected,
-    #[error("Unexpected event during handshake: {0}")]
-    UnexpectedEvent(String),
 }
 
 impl HandshakeError {
