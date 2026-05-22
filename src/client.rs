@@ -611,9 +611,29 @@ impl Client {
         )
     }
 
+    fn should_downgrade_iq_error(&self, err: &crate::request::IqError) -> bool {
+        if self.is_shutting_down() {
+            return true;
+        }
+
+        matches!(
+            err,
+            crate::request::IqError::NotConnected | crate::request::IqError::InternalChannelClosed
+        )
+    }
+
     /// Log a sync error, downgrading to debug level during shutdown/disconnect.
     fn log_sync_error(&self, context: &str, err: &anyhow::Error) {
         if self.should_downgrade_sync_error(err) {
+            debug!("Skipping {context} during shutdown: {err}");
+        } else {
+            warn!("Failed {context}: {err}");
+        }
+    }
+
+    /// Log an IQ error, downgrading to debug level during shutdown/disconnect.
+    fn log_iq_error(&self, context: &str, err: &crate::request::IqError) {
+        if self.should_downgrade_iq_error(err) {
             debug!("Skipping {context} during shutdown: {err}");
         } else {
             warn!("Failed {context}: {err}");
@@ -2215,8 +2235,8 @@ impl Client {
                 .establish_primary_phone_session_immediate()
                 .await
             {
-                warn!(target: "Client/PDO", "Failed to establish session with primary phone on login: {:?}", e);
                 // Don't fail login - PDO will retry via ensure_e2e_sessions fallback
+                client_clone.log_sync_error("establish session with primary phone", &e);
             }
 
             // Sync own device list so DM fan-out includes all companions
@@ -2230,10 +2250,8 @@ impl Client {
                 debug!("Skipping passive tasks: connection closed");
                 return;
             }
-            if let Err(e) = client_clone.upload_pre_keys_at_login().await
-                && !client_clone.is_shutting_down()
-            {
-                warn!("Failed to upload pre-keys during startup: {e:?}");
+            if let Err(e) = client_clone.upload_pre_keys_at_login().await {
+                client_clone.log_sync_error("upload pre-keys during startup", &e);
             }
 
             // === Send active IQ ===
@@ -2244,10 +2262,8 @@ impl Client {
                 debug!("Skipping active IQ: connection closed");
                 return;
             }
-            if let Err(e) = client_clone.set_passive(false).await
-                && !client_clone.is_shutting_down()
-            {
-                warn!("Failed to send post-connect active IQ: {e:?}");
+            if let Err(e) = client_clone.set_passive(false).await {
+                client_clone.log_iq_error("send post-connect active IQ", &e);
             }
 
             // === Wait for offline sync to complete ===
@@ -2292,26 +2308,22 @@ impl Client {
                     futures::join!(props_fut, blocklist_fut, privacy_fut, digest_fut);
 
                 // Suppress warnings if connection closed while queries were in-flight
-                if !bg_client.is_shutting_down() {
-                    if let Err(e) = r_props {
-                        warn!("Background init: Failed to fetch props: {e:?}");
-                    }
-                    if let Err(e) = r_block {
-                        warn!("Background init: Failed to fetch blocklist: {e:?}");
-                    }
-                    if let Err(e) = r_priv {
-                        warn!("Background init: Failed to fetch privacy settings: {e:?}");
-                    }
-                    if let Err(e) = r_digest {
-                        warn!("Background init: Failed to validate digest key: {e:?}");
-                    }
+                if let Err(e) = r_props {
+                    bg_client.log_iq_error("fetch props", &e);
+                }
+                if let Err(e) = r_block {
+                    bg_client.log_sync_error("fetch blocklist", &e);
+                }
+                if let Err(e) = r_priv {
+                    bg_client.log_iq_error("fetch privacy settings", &e);
+                }
+                if let Err(e) = r_digest {
+                    bg_client.log_sync_error("validate digest key", &e);
                 }
 
                 // Prune expired tcTokens on connect (matches WhatsApp Web's PrivacyTokenJob)
-                if let Err(e) = bg_client.tc_token().prune_expired().await
-                    && !bg_client.is_shutting_down()
-                {
-                    warn!("Background init: Failed to prune expired tc_tokens: {e:?}");
+                if let Err(e) = bg_client.tc_token().prune_expired().await {
+                    bg_client.log_sync_error("prune expired tc_tokens", &e);
                 }
             })).detach();
 
