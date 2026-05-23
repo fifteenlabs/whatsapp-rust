@@ -308,6 +308,12 @@ impl Client {
                 log::debug!("digestKey: unparseable digest response ({e}), skipping");
                 return Ok(());
             }
+            Err(
+                crate::request::IqError::NotConnected | crate::request::IqError::Disconnected(_),
+            ) => {
+                log::debug!("digestKey: not connected, skipping");
+                return Ok(());
+            }
             Err(e) => {
                 if !self.is_shutting_down() {
                     log::warn!("digestKey: server error: {:?}", e);
