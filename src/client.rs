@@ -2291,8 +2291,11 @@ impl Client {
                 let (r_props, r_block, r_priv, r_digest) =
                     futures::join!(props_fut, blocklist_fut, privacy_fut, digest_fut);
 
-                // Suppress warnings if connection closed while queries were in-flight
-                if !bg_client.is_shutting_down() {
+                // Suppress warnings if connection closed or replaced while queries were in-flight
+                let connection_lost = bg_client.is_shutting_down()
+                    || !bg_client.is_connected()
+                    || bg_client.connection_generation.load(Ordering::SeqCst) != bg_generation;
+                if !connection_lost {
                     if let Err(e) = r_props {
                         warn!("Background init: Failed to fetch props: {e:?}");
                     }
@@ -2308,8 +2311,11 @@ impl Client {
                 }
 
                 // Prune expired tcTokens on connect (matches WhatsApp Web's PrivacyTokenJob)
+                let stale = bg_client.is_shutting_down()
+                    || !bg_client.is_connected()
+                    || bg_client.connection_generation.load(Ordering::SeqCst) != bg_generation;
                 if let Err(e) = bg_client.tc_token().prune_expired().await
-                    && !bg_client.is_shutting_down()
+                    && !stale
                 {
                     warn!("Background init: Failed to prune expired tc_tokens: {e:?}");
                 }
