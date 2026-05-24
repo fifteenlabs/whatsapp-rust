@@ -3403,7 +3403,9 @@ impl Client {
             let from_jid = parser.jid("from");
             let id = parser.optional_string("id").map(|s| s.to_string());
             let pong = build_pong(from_jid.to_string(), id.as_deref());
-            if let Err(e) = self.send_node(pong).await {
+            if let Err(e) = self.send_node(pong).await
+                && !matches!(e, ClientError::NotConnected)
+            {
                 warn!("Failed to send pong: {e:?}");
             }
             return true;
