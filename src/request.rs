@@ -35,6 +35,17 @@ pub enum IqError {
     ParseError(#[from] anyhow::Error),
 }
 
+impl IqError {
+    /// The underlying transport is gone (not connected, server disconnected us,
+    /// channel dropped, or the encrypt-send pipeline hit a transport error).
+    pub fn is_transport_unavailable(&self) -> bool {
+        matches!(
+            self,
+            IqError::NotConnected | IqError::Disconnected(_) | IqError::InternalChannelClosed
+        ) || matches!(self, IqError::EncryptSend(e) if e.is_transport_unavailable())
+    }
+}
+
 impl From<wacore::request::IqError> for IqError {
     fn from(err: wacore::request::IqError) -> Self {
         match err {

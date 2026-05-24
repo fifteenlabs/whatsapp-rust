@@ -2246,6 +2246,7 @@ impl Client {
             }
             if let Err(e) = client_clone.set_passive(false).await
                 && !client_clone.is_shutting_down()
+                && !e.is_transport_unavailable()
             {
                 warn!("Failed to send post-connect active IQ: {e:?}");
             }
