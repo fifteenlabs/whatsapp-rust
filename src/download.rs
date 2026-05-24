@@ -137,7 +137,7 @@ where
                 Err(err) if err.is_auth() || err.is_not_found() => return Err(err.into_anyhow()),
                 Err(err) => {
                     let err = err.into_anyhow();
-                    log::warn!(
+                    log::debug!(
                         "Failed to download from URL {}: {:?}. Trying next host.",
                         request.url,
                         err
@@ -153,7 +153,10 @@ where
     }
 
     match last_err {
-        Some(err) => Err(err),
+        Some(ref err) => {
+            log::warn!("All media download hosts exhausted: {:?}", err);
+            Err(last_err.unwrap())
+        }
         None => Err(anyhow!("Failed to download from all available media hosts")),
     }
 }
@@ -205,7 +208,7 @@ where
                 Err(err) if err.is_auth() || err.is_not_found() => return Err(err.into_anyhow()),
                 Err(err) => {
                     let err = err.into_anyhow();
-                    log::warn!(
+                    log::debug!(
                         "Failed to stream-download from URL {}: {:?}. Trying next host.",
                         request.url,
                         err
@@ -221,7 +224,10 @@ where
     }
 
     match last_err {
-        Some(err) => Err(err),
+        Some(ref err) => {
+            log::warn!("All media stream-download hosts exhausted: {:?}", err);
+            Err(last_err.unwrap())
+        }
         None => Err(anyhow!("Failed to download from all available media hosts")),
     }
 }
