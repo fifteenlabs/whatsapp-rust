@@ -681,8 +681,10 @@ impl Client {
                             info.source.sender
                         );
                     } else {
-                        warn!(
-                            "Skipping skmsg decryption for message {} from {} because pkmsg failed to decrypt.",
+                        // pkmsg failure is already logged and handled by
+                        // process_session_enc_batch (retry receipt or nack sent).
+                        debug!(
+                            "[msg:{}] Skipping skmsg decryption from {} — pkmsg failed to decrypt",
                             info.id, info.source.sender
                         );
                         if !session_dispatched_undecryptable {
