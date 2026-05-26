@@ -88,6 +88,12 @@ pub(crate) fn build_offline_batch_request(count: u32) -> Node {
         .build()
 }
 
+/// If the first `send_batch` fails, wait this long before retrying.
+const FIRST_BATCH_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// How often the stall watchdog checks for forward progress.
+const STALL_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+
 /// Called from `IbHandler` on `<ib><offline_preview count="N"/>` with N > 0.
 pub(crate) async fn send_first_batch(client: Arc<Client>, total: usize) {
     let generation = client.connection_generation.load(Ordering::Acquire);
@@ -102,7 +108,24 @@ pub(crate) async fn send_first_batch(client: Arc<Client>, total: usize) {
     // the await: an arrival (primer) processed concurrently with this send may
     // have legitimately won the CAS already, and republishing would let a
     // second arrival win again and schedule a duplicate continuation.
-    let _ = send_batch(&client, BATCH_SIZE).await;
+    if send_batch(&client, BATCH_SIZE).await.is_err() {
+        // Retry once after a short delay — a transient socket hiccup right
+        // after login can cause the first attempt to fail, which silently
+        // stalls the entire pull loop.
+        client.runtime.sleep(FIRST_BATCH_RETRY_DELAY).await;
+        let _ = send_batch(&client, BATCH_SIZE).await;
+    }
+
+    // Spawn a watchdog that detects stalled progress and resends the batch
+    // request. Handles: (a) both send attempts above failing, (b) a batch
+    // response being lost, (c) the CAS continuation chain breaking.
+    let wd_client = Arc::clone(&client);
+    client
+        .runtime
+        .spawn(Box::pin(async move {
+            stall_watchdog(wd_client, generation).await;
+        }))
+        .detach();
 }
 
 /// Called from `process_node` after the per-stanza `processed_messages` bump.
@@ -135,6 +158,55 @@ async fn send_batch(client: &Client, count: u32) -> Result<(), ()> {
         return Err(());
     }
     Ok(())
+}
+
+/// Monitors offline sync progress and resends a batch request when no new
+/// stanzas have arrived within [`STALL_CHECK_INTERVAL`]. Exits as soon as
+/// the sync is complete, the connection generation changes, or the
+/// coordinator is disarmed.
+async fn stall_watchdog(client: Arc<Client>, generation: u64) {
+    let mut last_processed = client
+        .offline_sync_metrics
+        .processed_messages
+        .load(Ordering::Acquire);
+
+    loop {
+        client.runtime.sleep(STALL_CHECK_INTERVAL).await;
+
+        if client.offline_sync_completed.load(Ordering::Acquire)
+            || !client.offline_sync_metrics.active.load(Ordering::Acquire)
+            || client.connection_generation.load(Ordering::Acquire) != generation
+            || !client.offline_batch.is_armed_for(generation)
+        {
+            return;
+        }
+
+        let processed = client
+            .offline_sync_metrics
+            .processed_messages
+            .load(Ordering::Acquire);
+        let total = client
+            .offline_sync_metrics
+            .total_messages
+            .load(Ordering::Acquire);
+
+        if processed >= total {
+            return;
+        }
+
+        if processed == last_processed {
+            debug!(
+                target: "Client/OfflineResume",
+                "Stall detected ({}/{} processed), resending batch request",
+                processed,
+                total,
+            );
+            client.offline_batch.mark_batch_inflight();
+            let _ = send_batch(&client, BATCH_SIZE).await;
+        }
+
+        last_processed = processed;
+    }
 }
 
 fn schedule_continuation(client: Arc<Client>, generation: u64) {
