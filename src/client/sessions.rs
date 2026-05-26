@@ -11,8 +11,26 @@ use super::Client;
 use crate::types::events::{Event, OfflineSyncCompleted};
 
 impl Client {
-    /// WA Web: `WAWebOfflineResumeConst.OFFLINE_STANZA_TIMEOUT_MS = 60000`
-    pub(crate) const DEFAULT_OFFLINE_SYNC_TIMEOUT: Duration = Duration::from_secs(60);
+    /// Base timeout matching WA Web's `OFFLINE_STANZA_TIMEOUT_MS = 60000`.
+    /// The actual deadline is extended by [`Self::offline_sync_timeout`] for
+    /// large backlogs so the stall-watchdog has time to recover.
+    const BASE_OFFLINE_SYNC_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// Upper bound so a huge preview count cannot keep us waiting forever.
+    const MAX_OFFLINE_SYNC_TIMEOUT: Duration = Duration::from_secs(120);
+
+    /// Compute a timeout that scales with the expected item count.
+    /// Formula: `clamp(BASE + count/2 * 1s, BASE, MAX)`.
+    pub(crate) fn offline_sync_timeout(&self) -> Duration {
+        let count = self
+            .offline_sync_metrics
+            .total_messages
+            .load(Ordering::Acquire);
+        let extra = Duration::from_millis(count.saturating_mul(500) as u64);
+        Self::BASE_OFFLINE_SYNC_TIMEOUT
+            .saturating_add(extra)
+            .min(Self::MAX_OFFLINE_SYNC_TIMEOUT)
+    }
 
     pub(crate) fn complete_offline_sync(&self, count: i32) {
         self.offline_sync_metrics
@@ -52,7 +70,8 @@ impl Client {
 
     /// Wait for offline message delivery to complete (with timeout).
     pub(crate) async fn wait_for_offline_delivery_end(&self) {
-        self.wait_for_offline_delivery_end_with_timeout(Self::DEFAULT_OFFLINE_SYNC_TIMEOUT)
+        let timeout = self.offline_sync_timeout();
+        self.wait_for_offline_delivery_end_with_timeout(timeout)
             .await;
     }
 
