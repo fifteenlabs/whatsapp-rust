@@ -97,6 +97,13 @@ impl GroupInfo {
         self.lid_to_pn_map = lid_to_pn_map;
     }
 
+    /// The full LID-user → phone-number-JID mapping. fifteenlabs extension:
+    /// consumers that need to iterate every mapping (not just a single lookup
+    /// via [`GroupInfo::phone_jid_for_lid_user`]) read it through this getter.
+    pub fn lid_to_pn_map(&self) -> &HashMap<CompactString, Jid> {
+        &self.lid_to_pn_map
+    }
+
     /// Look up the mapped phone-number JID for a given LID user identifier.
     pub fn phone_jid_for_lid_user(&self, lid_user: &str) -> Option<&Jid> {
         self.lid_to_pn_map.get(lid_user)
