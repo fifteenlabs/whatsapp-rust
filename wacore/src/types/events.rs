@@ -294,6 +294,7 @@ pub enum EventKind {
     // app-state kinds would renumber every upstream kind after them, and make
     // each upstream rebase a silent renumbering.
     PushNameBatch,
+    LidPnBatch,
     // When adding a variant, mind the 128-kind ceiling below (EventInterest packs
     // each discriminant as a bit in a u128) and keep the guard pointing at the
     // last variant.
@@ -307,7 +308,7 @@ impl EventKind {
 
 // Build-time tripwire: a new variant that would overflow EventInterest's bitmask
 // fails compilation instead of silently corrupting the mask at runtime.
-const _: () = assert!((EventKind::PushNameBatch as u8) < EventKind::CAPACITY);
+const _: () = assert!((EventKind::LidPnBatch as u8) < EventKind::CAPACITY);
 
 /// A set of [`EventKind`]s a handler wants delivered. Producers can query the
 /// aggregate interest before building expensive payloads, and dispatch avoids
@@ -1087,6 +1088,12 @@ pub enum Event {
     /// after upstream's also means a sync only ever appends on both sides
     /// instead of renumbering across the seam.
     PushNameBatch(PushNameBatch),
+
+    /// PN↔LID pairs harvested from a HistorySync blob (field 15).
+    ///
+    /// fifteenlabs extension, appended for the same reason as
+    /// [`Event::PushNameBatch`] above.
+    LidPnBatch(LidPnBatch),
 }
 
 /// Payload for [`Event::PairPasskeyRequest`].
@@ -1183,6 +1190,7 @@ impl Event {
             Event::CallLogSync(_) => EventKind::CallLogSync,
             Event::ClientExpirationChanged(_) => EventKind::ClientExpirationChanged,
             Event::PushNameBatch(_) => EventKind::PushNameBatch,
+            Event::LidPnBatch(_) => EventKind::LidPnBatch,
             Event::HistorySync(_) => EventKind::HistorySync,
             Event::OfflineSyncPreview(_) => EventKind::OfflineSyncPreview,
             Event::OfflineSyncCompleted(_) => EventKind::OfflineSyncCompleted,
@@ -2513,6 +2521,20 @@ pub struct CallLogSync {
 pub struct PushNameBatch {
     /// `(jid_string, push_name)` pairs, in blob order. May contain duplicates
     /// if the server repeats an entry; consumers should treat it as last-wins.
+    pub entries: Vec<(String, String)>,
+}
+
+/// PN↔LID pairs harvested from `HistorySync.phoneNumberToLidMappings` (field 15).
+///
+/// The library already seeds its own LID↔PN cache from this same source; this
+/// event exists so an application keeping its own identity table (contact rows,
+/// avatar keys) can seed it from the same bulk source instead of waiting for
+/// per-contact notifications.
+#[derive(Debug, Clone, Serialize)]
+pub struct LidPnBatch {
+    /// `(lid_jid, pn_jid)` pairs as fully-qualified JID strings — the server
+    /// parts (`@lid` / `@s.whatsapp.net`) are re-attached to the bare user parts
+    /// that [`crate::history_sync::HistoryLidMapping`] carries.
     pub entries: Vec<(String, String)>,
 }
 

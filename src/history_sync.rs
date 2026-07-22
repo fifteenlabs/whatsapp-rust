@@ -1,4 +1,4 @@
-use crate::types::events::{Event, LazyHistorySync, PushNameBatch};
+use crate::types::events::{Event, LazyHistorySync, LidPnBatch, PushNameBatch};
 use bytes::Bytes;
 use std::sync::Arc;
 use wacore::history_sync::{
@@ -438,6 +438,26 @@ impl Client {
                 // (WAWebHistorySyncChunk): a conservative seed that only adds
                 // new LIDs and never clobbers a live-learned mapping.
                 if !sync_result.lid_mappings.is_empty() {
+                    // Surface the same bulk seed to the application before the
+                    // library consumes it, so an app-side identity table can be
+                    // seeded from history sync too. `HistoryLidMapping` carries
+                    // bare user parts, so re-attach the servers here.
+                    self.core.event_bus.dispatch(Event::LidPnBatch(LidPnBatch {
+                        entries: sync_result
+                            .lid_mappings
+                            .iter()
+                            .map(|m| {
+                                (
+                                    format!("{}@{}", m.lid, wacore_binary::Server::Lid.as_str()),
+                                    format!(
+                                        "{}@{}",
+                                        m.phone_number,
+                                        wacore_binary::Server::Pn.as_str()
+                                    ),
+                                )
+                            })
+                            .collect(),
+                    }));
                     let pairs: Vec<(String, String)> = sync_result
                         .lid_mappings
                         .into_iter()
