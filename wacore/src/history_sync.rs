@@ -43,6 +43,10 @@ pub struct HistorySyncResult {
     /// the bulk identity seed the server sends alongside the chats. Same
     /// source whatsmeow harvests in `storeHistoricalPNLIDMappings`.
     pub lid_mappings: Vec<HistoryLidMapping>,
+    /// Push names for contacts other than us, from `HistorySync.pushnames`
+    /// (field 7). Each entry is `(jid_string, push_name)`. Our own entry is
+    /// filtered out here — it lands in [`HistorySyncResult::own_pushname`].
+    pub contact_pushnames: Vec<(String, String)>,
     /// The original zlib-compressed input, handed back (moved, never copied or
     /// re-inflated) only when event listeners exist. Wrapped in
     /// `LazyHistorySync` for on-demand consumption.
@@ -448,6 +452,7 @@ where
         // the decode).
         msg_secret_records: Vec::new(),
         lid_mappings: Vec::new(),
+        contact_pushnames: Vec::new(),
         compressed_bytes: None,
         decompressed_size: 0,
     };
@@ -517,13 +522,23 @@ where
                     record_sink.reserve(&mut result.msg_secret_records, additional);
                 }
             }
-            // pushnames (repeated) — only our own is needed
+            // pushnames (repeated): ours goes to `own_pushname`, everyone
+            // else's is collected for the contact-name seed.
+            //
+            // The split goes through `pushname_id_is` rather than comparing the
+            // id to `own_user` directly: `Pushname.id` is a JID string and
+            // `own_user` is a bare user part, so a verbatim compare never
+            // matches — it would leave `own_pushname` permanently unset and file
+            // our own entry as a contact.
             tags::history_sync::PUSHNAMES => {
-                if result.own_pushname.is_none()
-                    && let Some(own) = own_user
-                    && let Some(name) = extract_own_pushname(value, own)
-                {
-                    result.own_pushname = Some(name);
+                if let Some((id, name)) = extract_pushname(value) {
+                    if own_user.is_some_and(|own| pushname_id_is(&id, own)) {
+                        if result.own_pushname.is_none() {
+                            result.own_pushname = Some(name);
+                        }
+                    } else {
+                        result.contact_pushnames.push((id, name));
+                    }
                 }
             }
             tags::history_sync::NCT_SALT if !value.is_empty() => {
@@ -789,9 +804,13 @@ fn pushname_id_is(id: &str, own_user: &str) -> bool {
 const PUSHNAME_ABSENT_SENTINEL: &str = "-";
 
 // Best-effort: a malformed pushname (optional metadata) must not abort the sync.
-fn extract_own_pushname(data: &[u8], own_user: &str) -> Option<String> {
+/// Returns `(id, pushname)` for any entry; the caller decides own vs contact.
+///
+/// Unlike an own-only parser this cannot bail early on an id mismatch, because
+/// every entry feeds [`HistorySyncResult::contact_pushnames`].
+fn extract_pushname(data: &[u8]) -> Option<(String, String)> {
     let mut pos = 0;
-    let mut id_match = false;
+    let mut id: Option<String> = None;
     let mut pushname: Option<String> = None;
 
     while pos < data.len() {
@@ -806,11 +825,7 @@ fn extract_own_pushname(data: &[u8], own_user: &str) -> Option<String> {
                 pos += vlen;
                 let len = usize::try_from(len).ok()?;
                 let end = pos.checked_add(len).filter(|&e| e <= data.len())?;
-                let id = smoothutf8::from_utf8(data.get(pos..end)?)?;
-                id_match = pushname_id_is(id, own_user);
-                if !id_match {
-                    return None; // wrong user, skip entirely
-                }
+                id = Some(smoothutf8::from_utf8(data.get(pos..end)?)?.to_string());
                 pos = end;
             }
             tags::pushname::PUSHNAME if wt == wire_type::LENGTH_DELIMITED => {
@@ -828,16 +843,18 @@ fn extract_own_pushname(data: &[u8], own_user: &str) -> Option<String> {
         }
     }
 
-    if !id_match {
-        return None;
-    }
     // Storing the sentinel is worse than having no name: the client persists
     // whatever comes back here, which makes `push_name.is_empty()` false for
     // good, so the bootstrap stops treating the account as still needing its
     // name and re-announces `-` on every reconnect. whatsmeow skips the same
     // value. The authoritative `setting_pushName` mutation does not come
     // through this path, so an account whose name really is `-` still gets it.
-    pushname.filter(|name| name != PUSHNAME_ABSENT_SENTINEL)
+    //
+    // Dropping the whole entry rather than only the own-name case: a contact
+    // seeded with `-` is a display name no better than none, and it would
+    // outrank the real name until the per-contact notification arrives.
+    let pushname = pushname.filter(|name| name != PUSHNAME_ABSENT_SENTINEL)?;
+    Some((id?, pushname))
 }
 
 /// One PN↔LID pair from `HistorySync.phoneNumberToLidMappings`, reduced to
@@ -3669,6 +3686,7 @@ mod tests {
             tc_token_candidates: Vec::new(),
             msg_secret_records: Vec::new(),
             lid_mappings: Vec::new(),
+            contact_pushnames: Vec::new(),
             compressed_bytes: None,
             decompressed_size: decompressed.len(),
         };
@@ -3695,18 +3713,21 @@ mod tests {
                     }
                     pos = end;
                 }
-                tags::history_sync::PUSHNAMES
-                    if own_user.is_some()
-                        && result.own_pushname.is_none()
-                        && wt == wire_type::LENGTH_DELIMITED =>
-                {
+                tags::history_sync::PUSHNAMES if wt == wire_type::LENGTH_DELIMITED => {
                     let (len, vlen) = read_varint(&decompressed[pos..]).unwrap();
                     pos += vlen;
                     let end = checked_end(pos, len, decompressed.len()).unwrap();
-                    if let Some(own) = own_user
-                        && let Some(name) = extract_own_pushname(&decompressed[pos..end], own)
-                    {
-                        result.own_pushname = Some(name);
+                    if let Some((id, name)) = extract_pushname(&decompressed[pos..end]) {
+                        // Same JID-aware split as the streaming parser above; a
+                        // verbatim compare here would make this reference
+                        // decoder disagree with the code it exists to check.
+                        if own_user.is_some_and(|own| pushname_id_is(&id, own)) {
+                            if result.own_pushname.is_none() {
+                                result.own_pushname = Some(name);
+                            }
+                        } else {
+                            result.contact_pushnames.push((id, name));
+                        }
                     }
                     pos = end;
                 }

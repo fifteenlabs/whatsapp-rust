@@ -1,4 +1,4 @@
-use crate::types::events::{Event, LazyHistorySync};
+use crate::types::events::{Event, LazyHistorySync, PushNameBatch};
 use bytes::Bytes;
 use std::sync::Arc;
 use wacore::history_sync::{
@@ -453,6 +453,17 @@ impl Client {
                         false,
                     )
                     .await;
+                }
+
+                // Contact push names, dispatched before the HistorySync event so
+                // consumers can seed display names before they walk the
+                // conversations that reference them.
+                if !sync_result.contact_pushnames.is_empty() {
+                    let entries = sync_result.contact_pushnames;
+                    log::info!("History sync provided {} contact push names", entries.len());
+                    self.core
+                        .event_bus
+                        .dispatch(Event::PushNameBatch(PushNameBatch { entries }));
                 }
 
                 // No interest pre-check: dispatch() evaluates handler interest

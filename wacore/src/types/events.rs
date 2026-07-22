@@ -289,6 +289,11 @@ pub enum EventKind {
     EncDecryptFailed,
     CallLogSync,
     ClientExpirationChanged,
+    // fifteenlabs extensions. At the end for the reason stated above: the
+    // discriminant is a bit index, so slotting these in beside the sibling
+    // app-state kinds would renumber every upstream kind after them, and make
+    // each upstream rebase a silent renumbering.
+    PushNameBatch,
     // When adding a variant, mind the 128-kind ceiling below (EventInterest packs
     // each discriminant as a bit in a u128) and keep the guard pointing at the
     // last variant.
@@ -302,7 +307,7 @@ impl EventKind {
 
 // Build-time tripwire: a new variant that would overflow EventInterest's bitmask
 // fails compilation instead of silently corrupting the mask at runtime.
-const _: () = assert!((EventKind::ClientExpirationChanged as u8) < EventKind::CAPACITY);
+const _: () = assert!((EventKind::PushNameBatch as u8) < EventKind::CAPACITY);
 
 /// A set of [`EventKind`]s a handler wants delivered. Producers can query the
 /// aggregate interest before building expensive payloads, and dispatch avoids
@@ -1073,6 +1078,15 @@ pub enum Event {
 
     /// The server pushed (or withdrew) a retirement deadline for this build.
     ClientExpirationChanged(ClientExpirationChanged),
+
+    /// Contact push names harvested from a HistorySync blob (field 7).
+    ///
+    /// fifteenlabs extension. Last, for the same reason every upstream variant
+    /// is appended rather than inserted: `Event` derives `Serialize`, and an
+    /// index-based format keys variants by position. Keeping our extensions
+    /// after upstream's also means a sync only ever appends on both sides
+    /// instead of renumbering across the seam.
+    PushNameBatch(PushNameBatch),
 }
 
 /// Payload for [`Event::PairPasskeyRequest`].
@@ -1168,6 +1182,7 @@ impl Event {
             Event::EncDecryptFailed(_) => EventKind::EncDecryptFailed,
             Event::CallLogSync(_) => EventKind::CallLogSync,
             Event::ClientExpirationChanged(_) => EventKind::ClientExpirationChanged,
+            Event::PushNameBatch(_) => EventKind::PushNameBatch,
             Event::HistorySync(_) => EventKind::HistorySync,
             Event::OfflineSyncPreview(_) => EventKind::OfflineSyncPreview,
             Event::OfflineSyncCompleted(_) => EventKind::OfflineSyncCompleted,
@@ -2485,6 +2500,20 @@ pub struct CallLogSync {
     pub timestamp: DateTime<Utc>,
     pub record: Box<wa::CallLogRecord>,
     pub from_full_sync: bool,
+}
+
+/// Push names for contacts other than us, harvested from `HistorySync.pushnames`
+/// (field 7) during the streaming parse. Fires once per history-sync blob that
+/// carries any, so consumers can seed contact display names before the
+/// individual contact notifications arrive.
+///
+/// Our own push name is not included — it is delivered separately as
+/// [`Event::SelfPushNameUpdated`]'s source or via the device record.
+#[derive(Debug, Clone, Serialize)]
+pub struct PushNameBatch {
+    /// `(jid_string, push_name)` pairs, in blob order. May contain duplicates
+    /// if the server repeats an entry; consumers should treat it as last-wins.
+    pub entries: Vec<(String, String)>,
 }
 
 #[cfg(test)]
