@@ -325,6 +325,7 @@ pub enum EventKind {
     // fifteenlabs extensions. Last, after every upstream kind, so a sync only
     // ever appends on both sides instead of renumbering across the seam.
     PushNameBatch,
+    LidPnBatch,
     // Append new kinds here. The list and capacity guard are generated/derived.
 }
 }
@@ -1310,6 +1311,12 @@ pub enum Event {
     /// after upstream's also means a sync only ever appends on both sides
     /// instead of renumbering across the seam.
     PushNameBatch(PushNameBatch),
+
+    /// PN↔LID pairs harvested from a HistorySync blob (field 15).
+    ///
+    /// fifteenlabs extension, appended for the same reason as
+    /// [`Event::PushNameBatch`] above.
+    LidPnBatch(LidPnBatch),
 }
 
 /// Payload for [`Event::PairPasskeyRequest`].
@@ -1440,6 +1447,7 @@ impl Event {
             Event::StatusPrivacyUpdate(_) => EventKind::StatusPrivacyUpdate,
             Event::ReachoutTimelockUpdate(_) => EventKind::ReachoutTimelockUpdate,
             Event::PushNameBatch(_) => EventKind::PushNameBatch,
+            Event::LidPnBatch(_) => EventKind::LidPnBatch,
             Event::HistorySync(_) => EventKind::HistorySync,
             Event::OfflineSyncPreview(_) => EventKind::OfflineSyncPreview,
             Event::OfflineSyncCompleted(_) => EventKind::OfflineSyncCompleted,
@@ -3184,6 +3192,20 @@ pub struct PushNameBatch {
     pub entries: Vec<(String, String)>,
 }
 
+/// PN↔LID pairs harvested from `HistorySync.phoneNumberToLidMappings` (field 15).
+///
+/// The library already seeds its own LID↔PN cache from this same source; this
+/// event exists so an application keeping its own identity table (contact rows,
+/// avatar keys) can seed it from the same bulk source instead of waiting for
+/// per-contact notifications.
+#[derive(Debug, Clone, Serialize)]
+pub struct LidPnBatch {
+    /// `(lid_jid, pn_jid)` pairs as fully-qualified JID strings — the server
+    /// parts (`@lid` / `@s.whatsapp.net`) are re-attached to the bare user parts
+    /// that [`crate::history_sync::HistoryLidMapping`] carries.
+    pub entries: Vec<(String, String)>,
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
@@ -3233,8 +3255,8 @@ mod tests {
 
     #[test]
     fn event_kind_list_is_discriminant_ordered() {
-        assert_eq!(EventKind::ALL.len(), 81);
-        assert_eq!(EventKind::ALL.last(), Some(&EventKind::PushNameBatch));
+        assert_eq!(EventKind::ALL.len(), 82);
+        assert_eq!(EventKind::ALL.last(), Some(&EventKind::LidPnBatch));
         assert!(EventKind::ALL.len() <= EventKind::CAPACITY as usize);
         for (i, &kind) in EventKind::ALL.iter().enumerate() {
             assert_eq!(kind as u8 as usize, i);
