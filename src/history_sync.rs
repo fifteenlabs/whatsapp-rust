@@ -1,4 +1,4 @@
-use crate::types::events::{CallLogHistory, Event, LazyHistorySync};
+use crate::types::events::{CallLogHistory, Event, LazyHistorySync, PushNameBatch};
 use bytes::Bytes;
 use std::sync::Arc;
 use wacore::history_sync::{
@@ -583,6 +583,17 @@ impl Client {
                 // underlying is_own_jid, without reloading per record.
                 let identity = self.persistence_manager.get_device_snapshot();
                 let identity_known = identity.pn.is_some() || identity.lid.is_some();
+
+                // Contact push names, dispatched before the HistorySync event so
+                // consumers can seed display names before they walk the
+                // conversations that reference them.
+                if !sync_result.contact_pushnames.is_empty() {
+                    let entries = sync_result.contact_pushnames;
+                    log::info!("History sync provided {} contact push names", entries.len());
+                    self.core
+                        .event_bus
+                        .dispatch(Event::PushNameBatch(PushNameBatch { entries }));
+                }
 
                 // No interest pre-check: dispatch() evaluates handler interest
                 // against a single bus snapshot (and skips materializing the

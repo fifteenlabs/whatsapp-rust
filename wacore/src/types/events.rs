@@ -322,6 +322,9 @@ pub enum EventKind {
     CallLogHistory,
     UnarchiveChatsSettingUpdate,
     LabelSublistUpdate,
+    // fifteenlabs extensions. Last, after every upstream kind, so a sync only
+    // ever appends on both sides instead of renumbering across the seam.
+    PushNameBatch,
     // Append new kinds here. The list and capacity guard are generated/derived.
 }
 }
@@ -1298,6 +1301,15 @@ pub enum Event {
 
     /// A chat's sublist entry was upserted or removed (`label_sublist`).
     LabelSublistUpdate(LabelSublistUpdate),
+
+    /// Contact push names harvested from a HistorySync blob (field 7).
+    ///
+    /// fifteenlabs extension. Last, for the same reason every upstream variant
+    /// is appended rather than inserted: `Event` derives `Serialize`, and an
+    /// index-based format keys variants by position. Keeping our extensions
+    /// after upstream's also means a sync only ever appends on both sides
+    /// instead of renumbering across the seam.
+    PushNameBatch(PushNameBatch),
 }
 
 /// Payload for [`Event::PairPasskeyRequest`].
@@ -1427,6 +1439,7 @@ impl Event {
             Event::FavoritesUpdate(_) => EventKind::FavoritesUpdate,
             Event::StatusPrivacyUpdate(_) => EventKind::StatusPrivacyUpdate,
             Event::ReachoutTimelockUpdate(_) => EventKind::ReachoutTimelockUpdate,
+            Event::PushNameBatch(_) => EventKind::PushNameBatch,
             Event::HistorySync(_) => EventKind::HistorySync,
             Event::OfflineSyncPreview(_) => EventKind::OfflineSyncPreview,
             Event::OfflineSyncCompleted(_) => EventKind::OfflineSyncCompleted,
@@ -3157,6 +3170,20 @@ pub struct CallLogHistory {
     pub chunk_order: Option<u32>,
 }
 
+/// Push names for contacts other than us, harvested from `HistorySync.pushnames`
+/// (field 7) during the streaming parse. Fires once per history-sync blob that
+/// carries any, so consumers can seed contact display names before the
+/// individual contact notifications arrive.
+///
+/// Our own push name is not included — it is delivered separately as
+/// [`Event::SelfPushNameUpdated`]'s source or via the device record.
+#[derive(Debug, Clone, Serialize)]
+pub struct PushNameBatch {
+    /// `(jid_string, push_name)` pairs, in blob order. May contain duplicates
+    /// if the server repeats an entry; consumers should treat it as last-wins.
+    pub entries: Vec<(String, String)>,
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
@@ -3206,8 +3233,8 @@ mod tests {
 
     #[test]
     fn event_kind_list_is_discriminant_ordered() {
-        assert_eq!(EventKind::ALL.len(), 80);
-        assert_eq!(EventKind::ALL.last(), Some(&EventKind::LabelSublistUpdate));
+        assert_eq!(EventKind::ALL.len(), 81);
+        assert_eq!(EventKind::ALL.last(), Some(&EventKind::PushNameBatch));
         assert!(EventKind::ALL.len() <= EventKind::CAPACITY as usize);
         for (i, &kind) in EventKind::ALL.iter().enumerate() {
             assert_eq!(kind as u8 as usize, i);
