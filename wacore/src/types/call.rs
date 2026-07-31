@@ -265,6 +265,19 @@ impl CallAction {
         }
     }
 
+    /// Whether the call is video, when this action declares it.
+    ///
+    /// Only an `<offer>` (or the group `<offer_notice>` fan-out) carries the
+    /// modality; every later action in the stream omits it, so a consumer that
+    /// needs it must read it off the offer or remember it. `None` means "this
+    /// action does not say", not "audio".
+    pub fn is_video(&self) -> Option<bool> {
+        match self {
+            Self::Offer { is_video, .. } | Self::OfferNotice { is_video, .. } => Some(*is_video),
+            _ => None,
+        }
+    }
+
     pub fn call_creator(&self) -> &Jid {
         match self {
             Self::Offer { call_creator, .. }
@@ -344,17 +357,32 @@ pub struct MissedCall {
     #[serde(with = "chrono::serde::ts_seconds")]
     pub timestamp: DateTime<Utc>,
     pub reason: MissedReason,
+    /// Whether the missed call was video, when the originating action declared it.
+    ///
+    /// `Some` for [`MissedReason::Offline`], which is built from the replayed
+    /// `<offer>` and so knows the modality; `None` for [`MissedReason::Remote`],
+    /// which is built from a `<terminate>` and cannot. Without this a consumer
+    /// has to guess, and rendering a missed video call as an audio one is a
+    /// visible lie rather than a missing detail. See [`CallAction::is_video`].
+    pub is_video: Option<bool>,
 }
 
 impl MissedCall {
     /// Construct a missed-call event. `#[non_exhaustive]` blocks the struct literal cross-crate, so
     /// this is how the high-level crate builds one.
-    pub fn new(from: Jid, call_id: String, timestamp: DateTime<Utc>, reason: MissedReason) -> Self {
+    pub fn new(
+        from: Jid,
+        call_id: String,
+        timestamp: DateTime<Utc>,
+        reason: MissedReason,
+        is_video: Option<bool>,
+    ) -> Self {
         Self {
             from,
             call_id,
             timestamp,
             reason,
+            is_video,
         }
     }
 }
