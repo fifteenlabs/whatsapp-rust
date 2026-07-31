@@ -202,6 +202,10 @@ impl StanzaHandler for CallHandler {
                             call.action.call_id().to_string(),
                             call.timestamp,
                             MissedReason::Offline,
+                            // The replayed offer declares the modality, so pass it
+                            // on: this is the consumer's only notice of the call,
+                            // and it cannot recover video-ness from anywhere else.
+                            call.action.is_video(),
                         )));
                 } else {
                     // Track an incoming offer as ringing so only an UNANSWERED <terminate> later
@@ -496,7 +500,9 @@ impl StanzaHandler for CallHandler {
                             None
                             | Some(TERMINATE_REASON_TIMEOUT)
                             | Some(TERMINATE_REASON_GROUP_CALL_ENDED) => Some(Event::MissedCall(
-                                MissedCall::new(from, cid, ts, MissedReason::Remote),
+                                // Built from a `<terminate>`, which carries no
+                                // modality — `None` rather than a guess.
+                                MissedCall::new(from, cid, ts, MissedReason::Remote, None),
                             )),
                             Some(TERMINATE_REASON_ACCEPTED_ELSEWHERE) => {
                                 Some(Event::CallEndedElsewhere(CallEndedElsewhere::new(
