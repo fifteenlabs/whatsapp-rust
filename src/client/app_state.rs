@@ -3656,6 +3656,13 @@ impl Client {
         ) {
             return;
         }
+
+        // Sticker tray mutations also key on an opaque id: the sticker's
+        // filehash at index[1], never a JID.
+        if crate::features::stickers::dispatch_sticker_mutation(&self.core.event_bus, m, full_sync)
+        {
+            return;
+        }
         if crate::features::app_state_settings::dispatch_app_state_setting_mutation(
             &self.core.event_bus,
             m,
