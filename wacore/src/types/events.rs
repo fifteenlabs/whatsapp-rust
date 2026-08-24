@@ -326,6 +326,7 @@ pub enum EventKind {
     // ever appends on both sides instead of renumbering across the seam.
     PushNameBatch,
     LidPnBatch,
+    StickerReupload,
     // Append new kinds here. The list and capacity guard are generated/derived.
 }
 }
@@ -1317,6 +1318,14 @@ pub enum Event {
     /// fifteenlabs extension, appended for the same reason as
     /// [`Event::PushNameBatch`] above.
     LidPnBatch(LidPnBatch),
+
+    /// The primary phone re-uploaded a sticker we asked for by hash
+    /// (`UPLOAD_STICKER` peer data operation) and handed back a complete
+    /// fresh [`wa::message::StickerMessage`].
+    ///
+    /// fifteenlabs extension, appended for the same reason as
+    /// [`Event::PushNameBatch`] above.
+    StickerReupload(StickerReupload),
 }
 
 /// Payload for [`Event::PairPasskeyRequest`].
@@ -1448,6 +1457,7 @@ impl Event {
             Event::ReachoutTimelockUpdate(_) => EventKind::ReachoutTimelockUpdate,
             Event::PushNameBatch(_) => EventKind::PushNameBatch,
             Event::LidPnBatch(_) => EventKind::LidPnBatch,
+            Event::StickerReupload(_) => EventKind::StickerReupload,
             Event::HistorySync(_) => EventKind::HistorySync,
             Event::OfflineSyncPreview(_) => EventKind::OfflineSyncPreview,
             Event::OfflineSyncCompleted(_) => EventKind::OfflineSyncCompleted,
@@ -3206,6 +3216,15 @@ pub struct LidPnBatch {
     pub entries: Vec<(String, String)>,
 }
 
+/// The primary phone re-uploaded a sticker on request; `sticker` carries the
+/// fresh CDN descriptor (directPath, mediaKey, hashes) ready to download or
+/// re-send.
+#[derive(Debug, Clone, Serialize, bon::Builder)]
+#[non_exhaustive]
+pub struct StickerReupload {
+    pub sticker: Box<wa::message::StickerMessage>,
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
@@ -3251,12 +3270,16 @@ mod tests {
         assert_eq!(EventKind::CallLogHistory as u8, 77);
         assert_eq!(EventKind::UnarchiveChatsSettingUpdate as u8, 78);
         assert_eq!(EventKind::LabelSublistUpdate as u8, 79);
+        // fifteenlabs extensions, pinned after the last upstream kind.
+        assert_eq!(EventKind::PushNameBatch as u8, 80);
+        assert_eq!(EventKind::LidPnBatch as u8, 81);
+        assert_eq!(EventKind::StickerReupload as u8, 82);
     }
 
     #[test]
     fn event_kind_list_is_discriminant_ordered() {
-        assert_eq!(EventKind::ALL.len(), 82);
-        assert_eq!(EventKind::ALL.last(), Some(&EventKind::LidPnBatch));
+        assert_eq!(EventKind::ALL.len(), 83);
+        assert_eq!(EventKind::ALL.last(), Some(&EventKind::StickerReupload));
         assert!(EventKind::ALL.len() <= EventKind::CAPACITY as usize);
         for (i, &kind) in EventKind::ALL.iter().enumerate() {
             assert_eq!(kind as u8 as usize, i);
