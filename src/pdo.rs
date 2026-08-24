@@ -294,6 +294,71 @@ impl Client {
         self.send_peer_message(peer_target, &msg).await
     }
 
+    /// Ask the primary phone to re-upload stickers it knows by SHA-256.
+    ///
+    /// The CDN evicts sticker blobs long before the phone forgets them: a
+    /// freshly-paired companion receives favorite and recent sticker
+    /// *metadata* whose `directPath`s already 403/410. WA Web recovers
+    /// exactly this way — `UPLOAD_STICKER` makes the phone re-upload the blob
+    /// and answer with a complete fresh [`wa::message::StickerMessage`],
+    /// surfaced here as [`Event::StickerReupload`] per sticker.
+    ///
+    /// Hashes are the raw 32-byte SHA-256 of the webp; the wire field is its
+    /// standard-base64 form, the same spelling the `favoriteSticker` app-state
+    /// index uses.
+    ///
+    /// [`Event::StickerReupload`]: wacore::types::events::Event::StickerReupload
+    #[cfg_attr(feature = "tracing", tracing::instrument(name = "wa.pdo.sticker_reupload", level = "debug", skip_all, fields(count = file_sha256s.len()), err(Debug)))]
+    pub async fn request_sticker_reupload(
+        self: &Arc<Self>,
+        file_sha256s: &[Vec<u8>],
+    ) -> Result<String, anyhow::Error> {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::STANDARD;
+
+        if file_sha256s.is_empty() {
+            return Err(anyhow::anyhow!("no sticker hashes to request"));
+        }
+        let device_snapshot = self.persistence_manager.get_device_snapshot();
+        let peer_target = self_peer_target(&device_snapshot)?;
+
+        let pdo_request = wa::message::PeerDataOperationRequestMessage {
+            peer_data_operation_request_type: Some(
+                wa::message::PeerDataOperationRequestType::UPLOAD_STICKER,
+            ),
+            request_sticker_reupload: file_sha256s
+                .iter()
+                .map(|hash| {
+                    wa::message::peer_data_operation_request_message::RequestStickerReupload {
+                        file_sha256: Some(STANDARD.encode(hash)),
+                    }
+                })
+                .collect(),
+            ..Default::default()
+        };
+
+        let protocol_message = wa::message::ProtocolMessage {
+            r#type: Some(wa::message::protocol_message::Type::PEER_DATA_OPERATION_REQUEST_MESSAGE),
+            peer_data_operation_request_message: buffa::MessageField::some(pdo_request),
+            ..Default::default()
+        };
+
+        let msg = wa::Message {
+            protocol_message: buffa::MessageField::some(protocol_message),
+            ..Default::default()
+        };
+
+        info!(
+            "Sending PDO sticker re-upload request for {} sticker(s) to {}",
+            file_sha256s.len(),
+            peer_target.observe()
+        );
+
+        self.ensure_e2e_sessions(std::slice::from_ref(&peer_target))
+            .await?;
+        self.send_peer_message(peer_target, &msg).await
+    }
+
     /// Sends a peer message (message to our own devices).
     /// This is used for PDO requests and similar device-to-device communication.
     #[cfg_attr(feature = "tracing", tracing::instrument(name = "wa.pdo.send_peer_message", level = "debug", skip_all, fields(to = %to.observe()), err(Debug)))]
@@ -353,6 +418,52 @@ impl Client {
             {
                 self.handle_placeholder_resend_response(placeholder_response, request_id)
                     .await;
+            }
+            if let Some(sticker) = result.sticker_message.as_option() {
+                let upload_result = result
+                    .media_upload_result
+                    .unwrap_or(wa::media_retry_notification::ResultType::SUCCESS);
+                if upload_result != wa::media_retry_notification::ResultType::SUCCESS {
+                    warn!(
+                        "PDO sticker re-upload failed on the phone: {:?} (request_id={})",
+                        upload_result, request_id
+                    );
+                    continue;
+                }
+                if sticker
+                    .file_sha256
+                    .as_deref()
+                    .unwrap_or_default()
+                    .is_empty()
+                    || sticker
+                        .direct_path
+                        .as_deref()
+                        .unwrap_or_default()
+                        .is_empty()
+                {
+                    warn!(
+                        "PDO sticker re-upload response missing fileSha256/directPath (request_id={})",
+                        request_id
+                    );
+                    continue;
+                }
+                self.core
+                    .event_bus
+                    .dispatch(wacore::types::events::Event::StickerReupload(
+                        wacore::types::events::StickerReupload::builder()
+                            .sticker(Box::new(sticker.clone()))
+                            .build(),
+                    ));
+            } else if result.media_upload_result.is_some()
+                && result
+                    .placeholder_message_resend_response
+                    .as_option()
+                    .is_none()
+            {
+                warn!(
+                    "PDO sticker re-upload result carried no sticker: {:?} (request_id={})",
+                    result.media_upload_result, request_id
+                );
             }
         }
     }
