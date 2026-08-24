@@ -559,6 +559,8 @@ impl Client {
             response.peer_data_operation_result.len()
         );
 
+        let is_sticker_reupload = response.peer_data_operation_request_type
+            == Some(wa::message::PeerDataOperationRequestType::UPLOAD_STICKER);
         for result in &response.peer_data_operation_result {
             if let Some(placeholder_response) =
                 result.placeholder_message_resend_response.as_option()
@@ -566,52 +568,46 @@ impl Client {
                 self.handle_placeholder_resend_response(placeholder_response, request_id)
                     .await;
             }
-            if let Some(sticker) = result.sticker_message.as_option() {
-                let upload_result = result
-                    .media_upload_result
-                    .unwrap_or(wa::media_retry_notification::ResultType::SUCCESS);
-                if upload_result != wa::media_retry_notification::ResultType::SUCCESS {
-                    warn!(
-                        "PDO sticker re-upload failed on the phone: {:?} (request_id={})",
-                        upload_result, request_id
-                    );
-                    continue;
-                }
-                if sticker
-                    .file_sha256
+            if !is_sticker_reupload {
+                continue;
+            }
+            let upload_result = result
+                .media_upload_result
+                .unwrap_or(wa::media_retry_notification::ResultType::SUCCESS);
+            if upload_result != wa::media_retry_notification::ResultType::SUCCESS {
+                warn!(
+                    "PDO sticker re-upload failed on the phone: {:?} (request_id={})",
+                    upload_result, request_id
+                );
+                continue;
+            }
+            let Some(sticker) = result.sticker_message.as_option() else {
+                warn!("PDO sticker re-upload result carried no sticker (request_id={request_id})");
+                continue;
+            };
+            if sticker
+                .file_sha256
+                .as_deref()
+                .unwrap_or_default()
+                .is_empty()
+                || sticker
+                    .direct_path
                     .as_deref()
                     .unwrap_or_default()
                     .is_empty()
-                    || sticker
-                        .direct_path
-                        .as_deref()
-                        .unwrap_or_default()
-                        .is_empty()
-                {
-                    warn!(
-                        "PDO sticker re-upload response missing fileSha256/directPath (request_id={})",
-                        request_id
-                    );
-                    continue;
-                }
-                self.core
-                    .event_bus
-                    .dispatch(wacore::types::events::Event::StickerReupload(
-                        wacore::types::events::StickerReupload::builder()
-                            .sticker(Box::new(sticker.clone()))
-                            .build(),
-                    ));
-            } else if result.media_upload_result.is_some()
-                && result
-                    .placeholder_message_resend_response
-                    .as_option()
-                    .is_none()
             {
                 warn!(
-                    "PDO sticker re-upload result carried no sticker: {:?} (request_id={})",
-                    result.media_upload_result, request_id
+                    "PDO sticker re-upload response missing fileSha256/directPath (request_id={request_id})"
                 );
+                continue;
             }
+            self.core
+                .event_bus
+                .dispatch(wacore::types::events::Event::StickerReupload(
+                    wacore::types::events::StickerReupload::builder()
+                        .sticker(Box::new(sticker.clone()))
+                        .build(),
+                ));
         }
 
         // One response can carry several recovery results, and they all answer
