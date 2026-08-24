@@ -297,6 +297,8 @@ pub enum EventKind {
     // each upstream rebase a silent renumbering.
     PushNameBatch,
     LidPnBatch,
+    FavoriteStickerUpdate,
+    RecentStickerRemoved,
     // When adding a variant, mind the 128-kind ceiling below (EventInterest packs
     // each discriminant as a bit in a u128) and keep the guard pointing at the
     // last variant.
@@ -310,7 +312,7 @@ impl EventKind {
 
 // Build-time tripwire: a new variant that would overflow EventInterest's bitmask
 // fails compilation instead of silently corrupting the mask at runtime.
-const _: () = assert!((EventKind::LidPnBatch as u8) < EventKind::CAPACITY);
+const _: () = assert!((EventKind::RecentStickerRemoved as u8) < EventKind::CAPACITY);
 
 /// A set of [`EventKind`]s a handler wants delivered. Producers can query the
 /// aggregate interest before building expensive payloads, and dispatch avoids
@@ -1220,6 +1222,22 @@ pub enum Event {
     /// fifteenlabs extension, appended for the same reason as
     /// [`Event::PushNameBatch`] above.
     LidPnBatch(LidPnBatch),
+
+    /// A sticker was favorited or unfavorited on a linked device
+    /// (`favoriteSticker`). Unfavoriting is the same `Set` with
+    /// `action.is_favorite == Some(false)`, so a consumer must check the flag.
+    ///
+    /// fifteenlabs extension, appended for the same reason as
+    /// [`Event::PushNameBatch`] above.
+    FavoriteStickerUpdate(FavoriteStickerUpdate),
+
+    /// A sticker was removed from the recents tray on a linked device
+    /// (`removeRecentSticker`). The removal only covers sends up to
+    /// `action.last_sticker_sent_ts`; a later re-send restores the sticker.
+    ///
+    /// fifteenlabs extension, appended for the same reason as
+    /// [`Event::PushNameBatch`] above.
+    RecentStickerRemoved(RecentStickerRemoved),
 }
 
 /// Payload for [`Event::PairPasskeyRequest`].
@@ -1318,6 +1336,8 @@ impl Event {
             Event::OfflineSyncInterrupted(_) => EventKind::OfflineSyncInterrupted,
             Event::PushNameBatch(_) => EventKind::PushNameBatch,
             Event::LidPnBatch(_) => EventKind::LidPnBatch,
+            Event::FavoriteStickerUpdate(_) => EventKind::FavoriteStickerUpdate,
+            Event::RecentStickerRemoved(_) => EventKind::RecentStickerRemoved,
             Event::HistorySync(_) => EventKind::HistorySync,
             Event::OfflineSyncPreview(_) => EventKind::OfflineSyncPreview,
             Event::OfflineSyncCompleted(_) => EventKind::OfflineSyncCompleted,
@@ -2747,6 +2767,35 @@ pub struct LidPnBatch {
     pub entries: Vec<(String, String)>,
 }
 
+/// A sticker was favorited or unfavorited on a linked device.
+///
+/// `filehash` is the mutation's index key: the base64 form of the sticker's
+/// SHA-256, which `action` itself does not carry. Together with the action's
+/// CDN fields it is everything needed to re-send the sticker without a
+/// re-upload.
+#[derive(Debug, Clone, Serialize, bon::Builder)]
+#[non_exhaustive]
+pub struct FavoriteStickerUpdate {
+    pub filehash: String,
+    pub timestamp: DateTime<Utc>,
+    pub action: Box<wa::sync_action_value::StickerAction>,
+    pub from_full_sync: bool,
+}
+
+/// A sticker was removed from the recents tray on a linked device.
+///
+/// `filehash` is the mutation's index key, as in [`FavoriteStickerUpdate`].
+/// The action's `last_sticker_sent_ts` bounds the removal: only sends at or
+/// before it are hidden, so a later re-send puts the sticker back.
+#[derive(Debug, Clone, Serialize, bon::Builder)]
+#[non_exhaustive]
+pub struct RecentStickerRemoved {
+    pub filehash: String,
+    pub timestamp: DateTime<Utc>,
+    pub action: Box<wa::sync_action_value::RemoveRecentStickerAction>,
+    pub from_full_sync: bool,
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
@@ -2781,6 +2830,8 @@ mod tests {
         assert_eq!(EventKind::AppStateSyncFailed as u8, 60);
         assert_eq!(EventKind::EncDecryptFailed as u8, 67);
         assert_eq!(EventKind::CallLogSync as u8, 68);
+        assert_eq!(EventKind::FavoriteStickerUpdate as u8, 72);
+        assert_eq!(EventKind::RecentStickerRemoved as u8, 73);
     }
 
     /// Every rejection a consumer can be handed must survive being persisted
