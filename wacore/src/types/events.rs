@@ -299,6 +299,7 @@ pub enum EventKind {
     LidPnBatch,
     FavoriteStickerUpdate,
     RecentStickerRemoved,
+    StickerReupload,
     // When adding a variant, mind the 128-kind ceiling below (EventInterest packs
     // each discriminant as a bit in a u128) and keep the guard pointing at the
     // last variant.
@@ -312,7 +313,7 @@ impl EventKind {
 
 // Build-time tripwire: a new variant that would overflow EventInterest's bitmask
 // fails compilation instead of silently corrupting the mask at runtime.
-const _: () = assert!((EventKind::RecentStickerRemoved as u8) < EventKind::CAPACITY);
+const _: () = assert!((EventKind::StickerReupload as u8) < EventKind::CAPACITY);
 
 /// A set of [`EventKind`]s a handler wants delivered. Producers can query the
 /// aggregate interest before building expensive payloads, and dispatch avoids
@@ -1238,6 +1239,14 @@ pub enum Event {
     /// fifteenlabs extension, appended for the same reason as
     /// [`Event::PushNameBatch`] above.
     RecentStickerRemoved(RecentStickerRemoved),
+
+    /// The primary phone re-uploaded a sticker we asked for by hash
+    /// (`UPLOAD_STICKER` peer data operation) and handed back a complete
+    /// fresh [`wa::message::StickerMessage`].
+    ///
+    /// fifteenlabs extension, appended for the same reason as
+    /// [`Event::PushNameBatch`] above.
+    StickerReupload(StickerReupload),
 }
 
 /// Payload for [`Event::PairPasskeyRequest`].
@@ -1338,6 +1347,7 @@ impl Event {
             Event::LidPnBatch(_) => EventKind::LidPnBatch,
             Event::FavoriteStickerUpdate(_) => EventKind::FavoriteStickerUpdate,
             Event::RecentStickerRemoved(_) => EventKind::RecentStickerRemoved,
+            Event::StickerReupload(_) => EventKind::StickerReupload,
             Event::HistorySync(_) => EventKind::HistorySync,
             Event::OfflineSyncPreview(_) => EventKind::OfflineSyncPreview,
             Event::OfflineSyncCompleted(_) => EventKind::OfflineSyncCompleted,
@@ -2796,6 +2806,15 @@ pub struct RecentStickerRemoved {
     pub from_full_sync: bool,
 }
 
+/// The primary phone re-uploaded a sticker on request; `sticker` carries the
+/// fresh CDN descriptor (directPath, mediaKey, hashes) ready to download or
+/// re-send.
+#[derive(Debug, Clone, Serialize, bon::Builder)]
+#[non_exhaustive]
+pub struct StickerReupload {
+    pub sticker: Box<wa::message::StickerMessage>,
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
@@ -2830,8 +2849,9 @@ mod tests {
         assert_eq!(EventKind::AppStateSyncFailed as u8, 60);
         assert_eq!(EventKind::EncDecryptFailed as u8, 67);
         assert_eq!(EventKind::CallLogSync as u8, 68);
-        assert_eq!(EventKind::FavoriteStickerUpdate as u8, 72);
-        assert_eq!(EventKind::RecentStickerRemoved as u8, 73);
+        assert_eq!(EventKind::FavoriteStickerUpdate as u8, 73);
+        assert_eq!(EventKind::RecentStickerRemoved as u8, 74);
+        assert_eq!(EventKind::StickerReupload as u8, 75);
     }
 
     /// Every rejection a consumer can be handed must survive being persisted
