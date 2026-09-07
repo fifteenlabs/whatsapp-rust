@@ -267,6 +267,18 @@ impl GroupInfo {
             .map(|slot| self.pn_order[slot] as usize)
     }
 
+    /// Every LID-user → phone-number-JID pair this group knows, in LID order.
+    ///
+    /// fifteenlabs extension: a consumer seeding its own identity table from a
+    /// group needs the whole mapping, not the single lookup
+    /// [`GroupInfo::phone_jid_for_lid_user`] answers. Borrows the sorted slice
+    /// directly, so walking it allocates nothing.
+    pub fn lid_to_pn_pairs(&self) -> impl ExactSizeIterator<Item = (&str, &Jid)> + '_ {
+        self.lid_pn
+            .iter()
+            .map(|(lid_user, phone_jid)| (lid_user.as_str(), phone_jid))
+    }
+
     /// Look up the mapped phone-number JID for a given LID user identifier.
     pub fn phone_jid_for_lid_user(&self, lid_user: &str) -> Option<&Jid> {
         self.lid_index(lid_user).map(|i| &self.lid_pn[i].1)
