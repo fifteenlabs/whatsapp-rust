@@ -299,6 +299,28 @@ pub(crate) async fn handle_group_notification(
                     return false;
                 }
             }
+            GroupNotificationAction::Link { groups, .. }
+            | GroupNotificationAction::Unlink { groups, .. } => {
+                // The community's metadata lists its subgroups and each
+                // subgroup's names its parent, so both sides went stale.
+                debug!(
+                    target: "Client/Group",
+                    "Community {} {} {} subgroups: invalidating metadata on both sides",
+                    notification.group_jid.observe(), action.tag_name(), groups.len()
+                );
+                client
+                    .lock_group_metadata(&notification.group_jid)
+                    .await
+                    .invalidate()
+                    .await;
+                for group in groups {
+                    client
+                        .lock_group_metadata(&group.jid)
+                        .await
+                        .invalidate()
+                        .await;
+                }
+            }
             _ => {}
         }
 
