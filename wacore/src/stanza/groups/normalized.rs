@@ -223,6 +223,7 @@ mod tests {
                 NodeBuilder::new("create")
                     .attr("test_id", "create-source")
                     .children([NodeBuilder::new("group")
+                        .attr("id", "123457@g.us")
                         .attr("creation", "123")
                         .attr("subject", "synthetic")
                         .build()])
@@ -261,7 +262,7 @@ mod tests {
                 .zip(["create-source", "link-source", "unlink-source"])
         {
             let raw = match action {
-                GroupNotificationAction::Create { raw }
+                GroupNotificationAction::Create { raw, .. }
                 | GroupNotificationAction::Link { raw, .. }
                 | GroupNotificationAction::Unlink { raw, .. } => raw,
                 _ => panic!("expected raw action"),

@@ -12,10 +12,12 @@
 //! end-to-end inside `stanza::groups::tests`.
 
 use serde_json::json;
+use wacore::iq::groups::GroupMetadataResponse;
 use wacore::iq::usync::{
     UsyncAddressingMode, UsyncContactResult, UsyncDevicesResult, UsyncFeature, UsyncOutcome,
     UsyncProtocol, UsyncProtocolResult,
 };
+use wacore::protocol::ProtocolNode;
 use wacore::stanza::business::BusinessNotificationType;
 use wacore::stanza::devices::DeviceNotificationType;
 use wacore::stanza::groups::{GroupNotificationAction, MembershipRequestMethod};
@@ -702,6 +704,14 @@ fn group_notification_action_omits_none_fields() {
     );
 }
 
+fn created_group() -> GroupMetadataResponse {
+    let node = NodeBuilder::new("group")
+        .attr("id", "120363099999999999@g.us")
+        .attr("subject", "Bouldering")
+        .build();
+    GroupMetadataResponse::try_from_node_ref(&node.as_node_ref()).unwrap()
+}
+
 #[test]
 fn group_notification_action_skips_unit_and_skipped_fields() {
     assert_eq!(
@@ -714,21 +724,33 @@ fn group_notification_action_skips_unit_and_skipped_fields() {
         serde_json::to_value(
             GroupNotificationAction::link()
                 .link_type("sub".into())
+                .groups(vec![])
                 .raw(raw.clone())
                 .build()
         )
         .unwrap(),
-        json!({ "type": "link", "link_type": "sub" })
+        json!({ "type": "link", "link_type": "sub", "groups": [] })
+    );
+    assert_eq!(
+        serde_json::to_value(
+            GroupNotificationAction::create()
+                .group(Box::new(created_group()))
+                .raw(raw.clone())
+                .build()
+        )
+        .unwrap(),
+        json!({ "type": "create" })
     );
     assert_eq!(
         serde_json::to_value(
             GroupNotificationAction::unlink()
                 .unlink_type("sub".into())
+                .groups(vec![])
                 .raw(raw)
                 .build()
         )
         .unwrap(),
-        json!({ "type": "unlink", "unlink_type": "sub" })
+        json!({ "type": "unlink", "unlink_type": "sub", "groups": [] })
     );
 
     // Fallback: the captured tag IS the discriminator, never an extra field.
@@ -769,9 +791,13 @@ fn group_notification_action_declares_exact_field_count() {
             .threshold("admin".into())
             .build(),
         GroupNotificationAction::locked().build(),
-        GroupNotificationAction::create().raw(raw.clone()).build(),
+        GroupNotificationAction::create()
+            .group(Box::new(created_group()))
+            .raw(raw.clone())
+            .build(),
         GroupNotificationAction::unlink()
             .unlink_type("sub".into())
+            .groups(vec![])
             .raw(raw)
             .build(),
         GroupNotificationAction::Unlocked,

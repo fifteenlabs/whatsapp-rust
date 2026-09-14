@@ -5,6 +5,8 @@ use super::actions_normalized::{NormalizedGroupAction, RequestedUser};
 use super::create_normalized::CreateParticipant;
 use super::normalized::GroupParseError;
 use super::{GroupNotificationAction, GroupNotificationActionTag, GroupParticipantInfo};
+use crate::iq::groups::GroupMetadataResponse;
+use crate::protocol::ProtocolNode;
 use wacore_binary::NodeRef;
 
 fn unsigned64(value: i64, field: &'static str) -> Result<u64, GroupParseError> {
@@ -82,7 +84,12 @@ pub(super) fn action_to_legacy(
     Ok(match action {
         N::Create { .. } => {
             require_raw_tag(wire, GroupNotificationActionTag::Create)?;
+            let group = wire
+                .get_optional_child("group")
+                .and_then(|group| GroupMetadataResponse::try_from_node_ref(group).ok())
+                .ok_or(GroupParseError::Field("group"))?;
             L::Create {
+                group: Box::new(group),
                 raw: wire.to_owned(),
             }
         }
@@ -192,6 +199,7 @@ pub(super) fn action_to_legacy(
             require_raw_tag(wire, GroupNotificationActionTag::Link)?;
             L::Link {
                 link_type: wire_text(wire, "link_type")?,
+                groups: super::parse_linked_groups(wire),
                 raw: wire.to_owned(),
             }
         }
@@ -202,6 +210,7 @@ pub(super) fn action_to_legacy(
                 unlink_reason: wire
                     .get_attr("unlink_reason")
                     .map(|value| value.as_str().into_owned()),
+                groups: super::parse_linked_groups(wire),
                 raw: wire.to_owned(),
             }
         }
