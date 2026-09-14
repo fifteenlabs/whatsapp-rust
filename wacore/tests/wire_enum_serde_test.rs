@@ -12,10 +12,12 @@
 //! end-to-end inside `stanza::groups::tests`.
 
 use serde_json::json;
+use wacore::iq::groups::GroupInfoResponse;
 use wacore::iq::usync::{
     UsyncAddressingMode, UsyncContactResult, UsyncDevicesResult, UsyncFeature, UsyncOutcome,
     UsyncProtocol, UsyncProtocolResult,
 };
+use wacore::protocol::ProtocolNode;
 use wacore::stanza::business::BusinessNotificationType;
 use wacore::stanza::devices::DeviceNotificationType;
 use wacore::stanza::groups::{GroupNotificationAction, MembershipRequestMethod};
@@ -476,6 +478,14 @@ fn group_notification_action_omits_none_fields() {
     );
 }
 
+fn created_group() -> GroupInfoResponse {
+    let node = NodeBuilder::new("group")
+        .attr("id", "120363099999999999@g.us")
+        .attr("subject", "Bouldering")
+        .build();
+    GroupInfoResponse::try_from_node_ref(&node.as_node_ref()).unwrap()
+}
+
 #[test]
 fn group_notification_action_skips_unit_and_skipped_fields() {
     assert_eq!(
@@ -483,23 +493,21 @@ fn group_notification_action_skips_unit_and_skipped_fields() {
         json!({ "type": "unlocked" })
     );
 
-    let raw = NodeBuilder::new("link").attr("link_type", "sub").build();
     assert_eq!(
-        serde_json::to_value(GroupNotificationAction::Link {
-            link_type: "sub".into(),
-            raw: raw.clone(),
+        serde_json::to_value(GroupNotificationAction::Create {
+            group: Box::new(created_group()),
         })
         .unwrap(),
-        json!({ "type": "link", "link_type": "sub" })
+        json!({ "type": "create" })
     );
     assert_eq!(
         serde_json::to_value(GroupNotificationAction::Unlink {
             unlink_type: "sub".into(),
             unlink_reason: None,
-            raw,
+            groups: vec![],
         })
         .unwrap(),
-        json!({ "type": "unlink", "unlink_type": "sub" })
+        json!({ "type": "unlink", "unlink_type": "sub", "groups": [] })
     );
 
     // Fallback: the captured tag IS the discriminator, never an extra field.
@@ -516,7 +524,6 @@ fn group_notification_action_skips_unit_and_skipped_fields() {
 fn group_notification_action_declares_exact_field_count() {
     use serde::Serialize;
 
-    let raw = NodeBuilder::new("link").attr("link_type", "sub").build();
     let samples = vec![
         // Mixed constant + optional, both present and absent.
         GroupNotificationAction::Subject {
@@ -545,11 +552,13 @@ fn group_notification_action_declares_exact_field_count() {
             threshold: Some("admin".into()),
         },
         GroupNotificationAction::Locked { threshold: None },
-        GroupNotificationAction::Create { raw: raw.clone() },
+        GroupNotificationAction::Create {
+            group: Box::new(created_group()),
+        },
         GroupNotificationAction::Unlink {
             unlink_type: "sub".into(),
             unlink_reason: None,
-            raw,
+            groups: vec![],
         },
         GroupNotificationAction::Unlocked,
         GroupNotificationAction::Unknown {

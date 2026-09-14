@@ -11,6 +11,8 @@
 //! - Participant lists are nested `<participant jid="..." />` children
 
 use crate::WireEnum;
+use crate::iq::groups::GroupInfoResponse;
+use crate::protocol::ProtocolNode;
 use serde::Serialize;
 use wacore_binary::Jid;
 use wacore_binary::{Node, NodeRef};
@@ -160,6 +162,24 @@ pub struct GroupParticipantInfo {
     pub group_history_sent_state: Option<GroupHistorySentState>,
 }
 
+/// One `<group>` child of a `<link>` / `<unlink>` community notification.
+///
+/// ```xml
+/// <link link_type="sub_group">
+///   <group jid="120363000000000000@g.us" subject="Bouldering"/>
+/// </link>
+/// ```
+///
+/// `subject` is present on `<link>` (the server names the subgroup so the
+/// client can render "X was linked" without a metadata query) and absent on
+/// `<unlink>`.
+#[derive(Debug, Clone, Serialize)]
+pub struct LinkedGroupInfo {
+    pub jid: Jid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+}
+
 /// All possible group notification action types.
 ///
 /// Maps 1:1 to `GROUP_NOTIFICATION_TAG` child element tags from WhatsApp Web.
@@ -296,31 +316,34 @@ pub enum GroupNotificationAction {
     GrowthUnlocked,
 
     // -- Group lifecycle --
-    /// `<create>` — Group created (complex structure, raw node preserved)
+    /// `<create>` — Group created. The `<group>` child is the same node the
+    /// `w:g2` info query answers with, so it is parsed by the same
+    /// [`GroupInfoResponse`] parser: `parent_group_jid` names the community
+    /// a linked subgroup was created in, `is_parent_group` marks a new
+    /// community. Skipped in the JSON form, as the raw node was before it.
     #[wire = "create"]
     Create {
         #[wire(skip)]
-        raw: Node,
+        group: Box<GroupInfoResponse>,
     },
     /// `<delete>` — Group deleted
     #[wire = "delete"]
     Delete { reason: Option<String> },
 
     // -- Community linking --
-    /// `<link link_type="...">` — Subgroup linked
+    /// `<link link_type="...">` — Subgroups linked to this community
     #[wire = "link"]
     Link {
         link_type: String,
-        #[wire(skip)]
-        raw: Node,
+        groups: Vec<LinkedGroupInfo>,
     },
-    /// `<unlink unlink_type="..." unlink_reason="...">` — Subgroup unlinked
+    /// `<unlink unlink_type="..." unlink_reason="...">` — Subgroups unlinked
+    /// from this community
     #[wire = "unlink"]
     Unlink {
         unlink_type: String,
         unlink_reason: Option<String>,
-        #[wire(skip)]
-        raw: Node,
+        groups: Vec<LinkedGroupInfo>,
     },
     /// `<linked_group_promote>` — Subgroup admin elevated (community parent).
     #[wire = "linked_group_promote"]
@@ -404,9 +427,9 @@ pub enum GroupNotificationAction {
 }
 
 impl GroupNotification {
-    /// Parse from a `NodeRef`. Most fields are zero-copy; `Create`, `Link`,
-    /// `Unlink`, `CreatedSubGroupSuggestion` and `RevokedSubGroupSuggestions`
-    /// call `.to_owned()` to store their child as `raw: Node`.
+    /// Parse from a `NodeRef`. Most fields are zero-copy;
+    /// `CreatedSubGroupSuggestion` and `RevokedSubGroupSuggestions` call
+    /// `.to_owned()` to store their child as `raw: Node`.
     pub fn try_from_node_ref(node: &NodeRef<'_>) -> Option<Self> {
         let mut attrs = node.attrs();
         let group_jid = attrs.optional_jid("from")?;
@@ -471,9 +494,10 @@ impl GroupNotification {
 /// function. If the `#[wire = "..."]` attribute on a variant changes, both
 /// the serializer and this dispatcher track it automatically.
 ///
-/// `Create`, `Link`, `Unlink`, `CreatedSubGroupSuggestion` and
-/// `RevokedSubGroupSuggestions` call `.to_owned()` because those variants
-/// store `raw: Node`.
+/// `CreatedSubGroupSuggestion` and `RevokedSubGroupSuggestions` call
+/// `.to_owned()` because those variants store `raw: Node`. `Create` hands its
+/// `<group>` child to the `w:g2` [`GroupInfoResponse`] parser and yields
+/// nothing when that child is missing or malformed, as WA Web does.
 fn parse_action(node: &NodeRef<'_>) -> Option<GroupNotificationAction> {
     use GroupNotificationActionTag as T;
     use wacore_binary::NodeContentRef;
@@ -627,7 +651,9 @@ fn parse_action(node: &NodeRef<'_>) -> Option<GroupNotificationAction> {
         },
         T::GrowthUnlocked => GroupNotificationAction::GrowthUnlocked,
         T::Create => GroupNotificationAction::Create {
-            raw: node.to_owned(),
+            group: Box::new(
+                GroupInfoResponse::try_from_node_ref(node.get_optional_child("group")?).ok()?,
+            ),
         },
         T::Delete => GroupNotificationAction::Delete {
             reason: node
@@ -642,7 +668,7 @@ fn parse_action(node: &NodeRef<'_>) -> Option<GroupNotificationAction> {
                 .as_deref()
                 .unwrap_or_default()
                 .to_string(),
-            raw: node.to_owned(),
+            groups: parse_linked_groups(node),
         },
         T::Unlink => GroupNotificationAction::Unlink {
             unlink_type: node
@@ -655,7 +681,7 @@ fn parse_action(node: &NodeRef<'_>) -> Option<GroupNotificationAction> {
                 .attrs()
                 .optional_string("unlink_reason")
                 .map(|s| s.into_owned()),
-            raw: node.to_owned(),
+            groups: parse_linked_groups(node),
         },
         T::LinkedGroupPromote => GroupNotificationAction::LinkedGroupPromote {
             participants: parse_participants(node),
@@ -739,6 +765,24 @@ fn parse_participants(node: &NodeRef<'_>) -> Vec<GroupParticipantInfo> {
                         username,
                         join_time,
                         group_history_sent_state,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_linked_groups(node: &NodeRef<'_>) -> Vec<LinkedGroupInfo> {
+    node.children()
+        .map(|children| {
+            children
+                .iter()
+                .filter(|c| c.tag == "group")
+                .filter_map(|c| {
+                    let mut attrs = c.attrs();
+                    Some(LinkedGroupInfo {
+                        jid: attrs.optional_jid("jid")?,
+                        subject: attrs.optional_string("subject").map(|s| s.into_owned()),
                     })
                 })
                 .collect()
@@ -1457,6 +1501,142 @@ mod tests {
         }
     }
 
+    fn subgroup_jid() -> Jid {
+        "120363099999999999@g.us".parse().unwrap()
+    }
+
+    fn created_group() -> GroupInfoResponse {
+        let node = NodeBuilder::new("group")
+            .attr("id", subgroup_jid())
+            .attr("subject", "Bouldering")
+            .build();
+        GroupInfoResponse::try_from_node_ref(&node.as_node_ref()).unwrap()
+    }
+
+    #[test]
+    fn test_parse_link_sub_group_carries_group_jids_and_subjects() {
+        let node = make_notification(vec![
+            NodeBuilder::new("link")
+                .attr("link_type", "sub_group")
+                .children(vec![
+                    NodeBuilder::new("group")
+                        .attr("jid", subgroup_jid())
+                        .attr("subject", "Bouldering")
+                        .build(),
+                ])
+                .build(),
+        ]);
+        let notif = GroupNotification::try_from_node_ref(&node.as_node_ref()).unwrap();
+        match &notif.actions[0] {
+            GroupNotificationAction::Link { link_type, groups } => {
+                assert_eq!(link_type, "sub_group");
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].jid, subgroup_jid());
+                assert_eq!(groups[0].subject.as_deref(), Some("Bouldering"));
+            }
+            other => panic!("expected Link, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_unlink_sub_group_carries_group_jids_and_reason() {
+        let node = make_notification(vec![
+            NodeBuilder::new("unlink")
+                .attr("unlink_type", "sub_group")
+                .attr("unlink_reason", "unlink")
+                .children(vec![
+                    NodeBuilder::new("group")
+                        .attr("jid", subgroup_jid())
+                        .build(),
+                ])
+                .build(),
+        ]);
+        let notif = GroupNotification::try_from_node_ref(&node.as_node_ref()).unwrap();
+        match &notif.actions[0] {
+            GroupNotificationAction::Unlink {
+                unlink_type,
+                unlink_reason,
+                groups,
+            } => {
+                assert_eq!(unlink_type, "sub_group");
+                assert_eq!(unlink_reason.as_deref(), Some("unlink"));
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].jid, subgroup_jid());
+                assert!(groups[0].subject.is_none());
+            }
+            other => panic!("expected Unlink, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_linked_subgroup_names_its_community() {
+        let lid: Jid = "271060335329480@lid".parse().unwrap();
+        let node = make_notification(vec![
+            NodeBuilder::new("create")
+                .children(vec![
+                    NodeBuilder::new("group")
+                        .attr("id", subgroup_jid())
+                        .attr("subject", "Bouldering")
+                        .attr("creator", admin_jid())
+                        .children(vec![
+                            NodeBuilder::new("linked_parent")
+                                .attr("jid", group_jid())
+                                .build(),
+                            NodeBuilder::new("participant")
+                                .attr("jid", lid.clone())
+                                .attr("phone_number", user_jid())
+                                .build(),
+                        ])
+                        .build(),
+                ])
+                .build(),
+        ]);
+        let notif = GroupNotification::try_from_node_ref(&node.as_node_ref()).unwrap();
+        match &notif.actions[0] {
+            GroupNotificationAction::Create { group } => {
+                assert_eq!(group.id, subgroup_jid());
+                assert_eq!(group.subject.as_str(), "Bouldering");
+                assert_eq!(group.creator, Some(admin_jid()));
+                assert_eq!(group.parent_group_jid, Some(group_jid()));
+                assert!(!group.is_parent_group);
+                assert_eq!(group.participants.len(), 1);
+                assert_eq!(group.participants[0].jid, lid);
+                assert_eq!(group.participants[0].phone_number, Some(user_jid()));
+            }
+            other => panic!("expected Create, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_community_flags_the_parent() {
+        let node = make_notification(vec![
+            NodeBuilder::new("create")
+                .children(vec![
+                    NodeBuilder::new("group")
+                        .attr("id", group_jid())
+                        .attr("subject", "Bloco")
+                        .children(vec![NodeBuilder::new("parent").build()])
+                        .build(),
+                ])
+                .build(),
+        ]);
+        let notif = GroupNotification::try_from_node_ref(&node.as_node_ref()).unwrap();
+        match &notif.actions[0] {
+            GroupNotificationAction::Create { group } => {
+                assert!(group.is_parent_group);
+                assert!(group.parent_group_jid.is_none());
+            }
+            other => panic!("expected Create, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_without_group_child_yields_no_action() {
+        let node = make_notification(vec![NodeBuilder::new("create").build()]);
+        let notif = GroupNotification::try_from_node_ref(&node.as_node_ref()).unwrap();
+        assert!(notif.actions.is_empty());
+    }
+
     #[test]
     fn test_parse_linked_group_promote_demote_carry_participants() {
         let promote_node = make_notification(vec![
@@ -1774,17 +1954,17 @@ mod tests {
             },
             GroupNotificationAction::GrowthUnlocked,
             GroupNotificationAction::Create {
-                raw: dummy_node.clone(),
+                group: Box::new(created_group()),
             },
             GroupNotificationAction::Delete { reason: None },
             GroupNotificationAction::Link {
                 link_type: "x".into(),
-                raw: dummy_node.clone(),
+                groups: vec![],
             },
             GroupNotificationAction::Unlink {
                 unlink_type: "x".into(),
                 unlink_reason: None,
-                raw: dummy_node.clone(),
+                groups: vec![],
             },
             GroupNotificationAction::LinkedGroupPromote {
                 participants: vec![],
