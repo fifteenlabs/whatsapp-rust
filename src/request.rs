@@ -181,7 +181,7 @@ pub enum IqError {
     DuplicateRequestId(String),
     #[error("failed to encode IQ request")]
     EncodeError(#[source] anyhow::Error),
-    #[error("failed to parse IQ response")]
+    #[error("failed to parse IQ response: {0}")]
     ParseError(#[from] anyhow::Error),
 }
 
@@ -498,7 +498,14 @@ impl Client {
                             backoff: *backoff,
                             response: response.clone().into(),
                         },
-                        _ => IqError::ParseError(error),
+                        _ => {
+                            log::warn!(
+                                target: "Client/IQ",
+                                "IQ response did not parse: {error}; response={:?}",
+                                response.get()
+                            );
+                            IqError::ParseError(error)
+                        }
                     }
                 })
             });

@@ -3148,7 +3148,7 @@ impl IqSpec for JoinLinkedGroupIq {
         {
             return Ok(JoinGroupResult::Joined(jid));
         }
-        parse_join_group_response(response)
+        parse_join_group_response(response, Some(&self.subgroup_jid))
     }
 }
 
@@ -3240,7 +3240,15 @@ const JOIN_COMMUNITY_CHILD: &str = "community";
 const JOIN_APPROVAL_CHILD: &str = "membership_approval_request";
 
 /// Shared response parser for group join IQs (both code-based and V4 invite).
-fn parse_join_group_response(response: &NodeRef<'_>) -> Result<JoinGroupResult> {
+/// `requested` is the group the request itself named, if it named one. The
+/// server answers a pending join with a bare `<membership_approval_request/>`
+/// when the request already identified the group (a linked-subgroup join, a
+/// join by group JID), and with a `jid` attribute when it did not (a join by
+/// invite code).
+fn parse_join_group_response(
+    response: &NodeRef<'_>,
+    requested: Option<&Jid>,
+) -> Result<JoinGroupResult> {
     if let Some(group_node) = response
         .get_optional_child(JOIN_GROUP_CHILD)
         .or_else(|| response.get_optional_child(JOIN_COMMUNITY_CHILD))
@@ -3252,10 +3260,12 @@ fn parse_join_group_response(response: &NodeRef<'_>) -> Result<JoinGroupResult> 
         return Ok(JoinGroupResult::Joined(jid));
     }
     if let Some(approval_node) = response.get_optional_child(JOIN_APPROVAL_CHILD) {
-        let jid_str = required_attr(approval_node, "jid")?;
-        let jid: Jid = jid_str
-            .parse()
-            .map_err(|e| anyhow!("invalid group jid: {e}"))?;
+        let jid = match approval_node.attrs().optional_jid("jid") {
+            Some(jid) => jid,
+            None => requested
+                .cloned()
+                .ok_or_else(|| anyhow!("membership_approval_request names no group"))?,
+        };
         return Ok(JoinGroupResult::PendingApproval(jid));
     }
     // NOTE: this message is matched downstream (bridge/baileyrs surfaces it);
@@ -3296,7 +3306,7 @@ impl IqSpec for AcceptGroupInviteIq {
     }
 
     fn parse_response(&self, response: &NodeRef<'_>) -> Result<Self::Response> {
-        parse_join_group_response(response)
+        parse_join_group_response(response, None)
     }
 }
 
@@ -3343,7 +3353,7 @@ impl IqSpec for AcceptGroupInviteV4Iq {
         if response.get_optional_child(JOIN_GROUP_CHILD).is_some()
             || response.get_optional_child(JOIN_COMMUNITY_CHILD).is_some()
         {
-            return parse_join_group_response(response);
+            return parse_join_group_response(response, Some(&self.group_jid));
         }
         match super::pilots::parse_accept_group_add_payload(response) {
             super::pilots::AcceptGroupAddSuccess::GroupJoinRequestSuccess => {
@@ -6873,6 +6883,30 @@ mod tests {
         let iq = result_iq(TEST_PARENT_JID, vec![approval_child(TEST_GROUP_JID)]);
         let result = spec.parse_response(&iq.as_node_ref()).unwrap();
         assert_eq!(result, JoinGroupResult::PendingApproval(subgroup));
+    }
+
+    /// Captured 2026-09-15 from a request-to-join on a linked subgroup: the
+    /// server's pending answer is a bare `<membership_approval_request/>`, so
+    /// the group is the one the request named.
+    #[test]
+    fn test_join_linked_group_bare_approval_child_names_the_requested_subgroup() {
+        let (subgroup, spec) = linked_spec();
+        let iq = result_iq(
+            TEST_PARENT_JID,
+            vec![NodeBuilder::new(JOIN_APPROVAL_CHILD).build()],
+        );
+        let result = spec.parse_response(&iq.as_node_ref()).unwrap();
+        assert_eq!(result, JoinGroupResult::PendingApproval(subgroup));
+    }
+
+    #[test]
+    fn test_accept_invite_bare_approval_child_is_rejected() {
+        let spec = AcceptGroupInviteIq::new("code");
+        let iq = result_iq(
+            TEST_PARENT_JID,
+            vec![NodeBuilder::new(JOIN_APPROVAL_CHILD).build()],
+        );
+        assert!(spec.parse_response(&iq.as_node_ref()).is_err());
     }
 
     #[test]
