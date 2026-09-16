@@ -4,7 +4,10 @@
 use super::actions_normalized::{NormalizedGroupAction, RequestedUser};
 use super::create_normalized::CreateParticipant;
 use super::normalized::GroupParseError;
-use super::{GroupNotificationAction, GroupNotificationActionTag, GroupParticipantInfo};
+use super::{
+    GroupNotificationAction, GroupNotificationActionTag, GroupParticipantInfo,
+    ParticipantChangeReason,
+};
 use crate::iq::groups::GroupMetadataResponse;
 use crate::protocol::ProtocolNode;
 use wacore_binary::NodeRef;
@@ -99,7 +102,9 @@ pub(super) fn action_to_legacy(
             ..
         } => L::Add {
             participants: participants(values)?,
-            reason: reason.as_ref().map(|value| value.as_str().to_string()),
+            reason: reason
+                .as_ref()
+                .map(|value| ParticipantChangeReason::from(value.as_str())),
         },
         N::Delete { reason, .. } => L::Delete {
             reason: reason.as_ref().map(|value| value.as_str().to_string()),
@@ -110,7 +115,9 @@ pub(super) fn action_to_legacy(
             ..
         } => L::Remove {
             participants: participants(values)?,
-            reason: reason.as_ref().map(|value| value.as_str().to_string()),
+            reason: reason
+                .as_ref()
+                .map(|value| ParticipantChangeReason::from(value.as_str())),
         },
         N::Promote {
             participants: values,
