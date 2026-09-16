@@ -181,7 +181,7 @@ pub enum IqError {
     DuplicateRequestId(String),
     #[error("failed to encode IQ request")]
     EncodeError(#[source] anyhow::Error),
-    #[error("failed to parse IQ response")]
+    #[error("failed to parse IQ response: {0}")]
     ParseError(#[from] anyhow::Error),
 }
 
@@ -465,8 +465,14 @@ impl Client {
         };
 
         let response = self.execute_prepared(req_id, prepared).await?;
-        spec.parse_response(response.get())
-            .map_err(IqError::ParseError)
+        spec.parse_response(response.get()).map_err(|e| {
+            log::warn!(
+                target: "Client/IQ",
+                "IQ response did not parse: {e}; response={:?}",
+                response.get()
+            );
+            IqError::ParseError(e)
+        })
     }
 
     /// [`Client::execute`] for a spec whose response is consumed as it is
