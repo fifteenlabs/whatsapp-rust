@@ -75,6 +75,40 @@ pub enum MembershipRequestMethod {
     NonAdminAdd,
 }
 
+/// The `reason` attribute on `<add>` and `<remove>`: why the server changed
+/// the participant list.
+///
+/// Membership reasons describe a real join or leave. The two
+/// `default_sub_group_*` reasons do not: when the receiver is promoted to or
+/// demoted from community admin, the server re-announces the announcement
+/// group's members whose identity only admins may see, so those stanzas are
+/// visibility changes rather than membership changes.
+#[derive(Debug, Clone, PartialEq, Eq, WireEnum)]
+pub enum ParticipantChangeReason {
+    #[wire = "invite"]
+    Invite,
+    #[wire = "linked_group_join"]
+    LinkedGroupJoin,
+    #[wire = "default_sub_group_promote"]
+    DefaultSubGroupPromote,
+    #[wire = "default_sub_group_demote"]
+    DefaultSubGroupDemote,
+    /// A value this build does not model, kept verbatim.
+    #[wire_fallback]
+    Unknown(String),
+}
+
+impl ParticipantChangeReason {
+    /// `true` when the stanza reflects who the receiver may now see rather
+    /// than who joined or left.
+    pub fn is_visibility_change(&self) -> bool {
+        matches!(
+            self,
+            Self::DefaultSubGroupPromote | Self::DefaultSubGroupDemote
+        )
+    }
+}
+
 /// Parsed group notification containing one or more actions.
 #[derive(Debug, Clone)]
 pub struct GroupNotification {
@@ -193,17 +227,17 @@ pub struct LinkedGroupInfo {
 #[wire(tag = "type")]
 pub enum GroupNotificationAction {
     // -- Participant management --
-    /// `<add>` — Members added to group
+    /// `<add reason="...">` — Members added to group
     #[wire = "add"]
     Add {
         participants: Vec<GroupParticipantInfo>,
-        reason: Option<String>,
+        reason: Option<ParticipantChangeReason>,
     },
-    /// `<remove>` — Members removed from group
+    /// `<remove reason="...">` — Members removed from group
     #[wire = "remove"]
     Remove {
         participants: Vec<GroupParticipantInfo>,
-        reason: Option<String>,
+        reason: Option<ParticipantChangeReason>,
     },
     /// `<promote>` — Members promoted to admin
     #[wire = "promote"]
@@ -512,17 +546,11 @@ fn parse_action(node: &NodeRef<'_>) -> Option<GroupNotificationAction> {
     let action = match tag {
         T::Add => GroupNotificationAction::Add {
             participants: parse_participants(node),
-            reason: node
-                .attrs()
-                .optional_string("reason")
-                .map(|s| s.into_owned()),
+            reason: parse_change_reason(node),
         },
         T::Remove => GroupNotificationAction::Remove {
             participants: parse_participants(node),
-            reason: node
-                .attrs()
-                .optional_string("reason")
-                .map(|s| s.into_owned()),
+            reason: parse_change_reason(node),
         },
         T::Promote => GroupNotificationAction::Promote {
             participants: parse_participants(node),
@@ -846,6 +874,15 @@ fn parse_participant_jids(node: &NodeRef<'_>) -> Vec<Jid> {
         .unwrap_or_default()
 }
 
+/// Maps the `reason` attribute of `<add>`/`<remove>` to
+/// [`ParticipantChangeReason`]; an unmodelled value lands in `Unknown`.
+fn parse_change_reason(node: &NodeRef<'_>) -> Option<ParticipantChangeReason> {
+    node.attrs()
+        .optional_string("reason")
+        .as_deref()
+        .map(ParticipantChangeReason::from)
+}
+
 /// Maps the `request_method` attribute to [`MembershipRequestMethod`].
 /// Defaults to `InviteLink` when absent or unknown — matches WA Web's fallback.
 /// Wire strings come from the derived `TryFrom<&str>` impl; this function has
@@ -918,6 +955,50 @@ mod tests {
         assert_eq!(notification.participant_country_code.as_deref(), Some("BR"));
         assert!(notification.has_incomplete_participant_information);
         assert_eq!(notification.actions.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_add_remove_reason_is_typed() {
+        for (tag, reason, expected) in [
+            (
+                "add",
+                "default_sub_group_promote",
+                ParticipantChangeReason::DefaultSubGroupPromote,
+            ),
+            (
+                "remove",
+                "default_sub_group_demote",
+                ParticipantChangeReason::DefaultSubGroupDemote,
+            ),
+            ("add", "invite", ParticipantChangeReason::Invite),
+            (
+                "add",
+                "something_new",
+                ParticipantChangeReason::Unknown("something_new".into()),
+            ),
+        ] {
+            let node = make_notification(vec![
+                NodeBuilder::new(tag)
+                    .attr("reason", reason)
+                    .children(vec![
+                        NodeBuilder::new("participant")
+                            .attr("jid", user_jid())
+                            .build(),
+                    ])
+                    .build(),
+            ]);
+            let notif = GroupNotification::try_from_node_ref(&node.as_node_ref()).unwrap();
+            let parsed = match &notif.actions[0] {
+                GroupNotificationAction::Add { reason, .. }
+                | GroupNotificationAction::Remove { reason, .. } => reason.clone(),
+                other => panic!("expected {tag}, got {other:?}"),
+            };
+            assert_eq!(parsed, Some(expected.clone()));
+            assert_eq!(
+                expected.is_visibility_change(),
+                reason.starts_with("default_sub_group_")
+            );
+        }
     }
 
     #[test]
@@ -1900,7 +1981,7 @@ mod tests {
             },
             GroupNotificationAction::Remove {
                 participants: vec![],
-                reason: Some("r".into()),
+                reason: Some(ParticipantChangeReason::Unknown("r".into())),
             },
             GroupNotificationAction::Promote {
                 participants: vec![],
