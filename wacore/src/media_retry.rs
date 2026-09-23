@@ -142,9 +142,13 @@ pub fn build_media_retry_receipt(
         rmr_builder = rmr_builder.attr("participant", p);
     }
 
+    // The re-upload is served by the primary device, so the receipt is
+    // addressed to the account's bare JID (WA Web's `ownID.ToNonAD()`), never
+    // to the companion device that asks.
+    let primary = own_jid.to_non_ad();
     NodeBuilder::new("receipt")
         .attr("type", "server-error")
-        .attr("to", own_jid)
+        .attr("to", &primary)
         .attr("id", msg_id)
         .children([encrypt_node, rmr_builder.build()])
         .build()
@@ -314,6 +318,22 @@ mod tests {
         assert_eq!(
             rmr.attrs().optional_string("from_me").unwrap().as_ref(),
             "false"
+        );
+    }
+
+    #[test]
+    fn build_receipt_addresses_the_primary_device_not_the_companion() {
+        let own_jid = Jid::pn("1234567890").with_device(34);
+        let chat_jid = Jid::pn("9876543210");
+
+        let (ciphertext, iv) = encrypt_media_retry_receipt(&[1u8; 32], "MSG2").unwrap();
+
+        let node =
+            build_media_retry_receipt(&own_jid, "MSG2", &chat_jid, false, None, &ciphertext, &iv);
+
+        assert_eq!(
+            node.attrs().optional_string("to").unwrap().as_ref(),
+            "1234567890@s.whatsapp.net"
         );
     }
 
