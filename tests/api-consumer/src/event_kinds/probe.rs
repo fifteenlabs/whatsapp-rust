@@ -83,7 +83,11 @@ fn disposition(kind: EventKind) -> Option<bool> {
         | FavoritesUpdate
         | StatusPrivacyUpdate
         | ReachoutTimelockUpdate
-        | UnarchiveChatsSettingUpdate => Some(false),
+        | UnarchiveChatsSettingUpdate
+        // fifteenlabs extensions.
+        | PushNameBatch
+        | LidPnBatch
+        | StickerReupload => Some(false),
         _ => None,
     }
 }
