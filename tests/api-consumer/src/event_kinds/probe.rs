@@ -87,7 +87,8 @@ fn disposition(kind: EventKind) -> Option<bool> {
         // fifteenlabs extensions.
         | PushNameBatch
         | LidPnBatch
-        | StickerReupload => Some(false),
+        | StickerReupload
+        | BlocklistChanged => Some(false),
         _ => None,
     }
 }
