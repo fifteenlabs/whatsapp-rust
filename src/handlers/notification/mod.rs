@@ -416,6 +416,58 @@ mod tests {
         );
     }
 
+    // ── `account_sync` / `<blocklist>` (whatsmeow `handleBlocklist`)
+    //
+    // The server fans a block or unblock made on any device out to the others
+    // as a `<blocklist>` child of `account_sync`. We read only `pushname`,
+    // `<devices>` and `<disappearing_mode>` out of that notification, so a
+    // consumer caching the blocklist never heard about the change.
+
+    #[tokio::test]
+    async fn account_sync_blocklist_reaches_the_consumer() {
+        use wacore::stanza::blocklist::BlocklistAction;
+
+        let (client, collector) = client_with_collector().await;
+
+        let notif = NodeBuilder::new("notification")
+            .attr("type", NotificationType::AccountSync.as_str())
+            .attr("from", OWN_PN)
+            .attr("id", "acct-sync-bl-1")
+            .attr("t", "1704067200")
+            .children([NodeBuilder::new("blocklist")
+                .attr("dhash", "2:abc")
+                .children([
+                    NodeBuilder::new("item")
+                        .attr("jid", "123456789012345@lid")
+                        .attr("action", "block")
+                        .build(),
+                    NodeBuilder::new("item")
+                        .attr("jid", "543210987654321@lid")
+                        .attr("action", "unblock")
+                        .build(),
+                ])
+                .build()])
+            .build();
+        handle_notification_impl(&client, node_to_arc(notif)).await;
+
+        let changed = collector
+            .events()
+            .into_iter()
+            .find_map(|event| match event.as_ref() {
+                Event::BlocklistChanged(changed) => Some(changed.clone()),
+                _ => None,
+            })
+            .expect("an account_sync blocklist must reach the consumer");
+        assert_eq!(changed.dhash.as_deref(), Some("2:abc"));
+        assert_eq!(changed.changes.len(), 2);
+        assert_eq!(
+            changed.changes[0].jid,
+            "123456789012345@lid".parse::<Jid>().unwrap()
+        );
+        assert_eq!(changed.changes[0].action, BlocklistAction::Block);
+        assert_eq!(changed.changes[1].action, BlocklistAction::Unblock);
+    }
+
     /// A type a subsystem claims must not be shadowed by a core arm. The seam
     /// is consulted only in the fallthrough, so an arm added here later would
     /// take the stanza and the subsystem would silently stop seeing it. The

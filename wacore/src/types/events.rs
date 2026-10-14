@@ -1,4 +1,5 @@
 use crate::stanza::BusinessSubscription;
+use crate::stanza::blocklist::{BlocklistChange, BlocklistListAction};
 use crate::types::call::{CallEndedElsewhere, IncomingCall, MissedCall};
 use crate::types::message::MessageInfo;
 use crate::types::presence::{ChatActivity, PresenceStatus, ReceiptType};
@@ -327,6 +328,7 @@ pub enum EventKind {
     PushNameBatch,
     LidPnBatch,
     StickerReupload,
+    BlocklistChanged,
     // Append new kinds here. The list and capacity guard are generated/derived.
 }
 }
@@ -1012,6 +1014,22 @@ pub struct DisappearingModeChanged {
     pub setting_timestamp: DateTime<Utc>,
 }
 
+/// Our own blocklist changed, on this device or another.
+///
+/// Sent by the server as a `<blocklist>` child of
+/// `<notification type="account_sync">`. whatsmeow: `handleBlocklist`.
+/// `changes` is the delta. With `action` set to `Modify` the stanza names no
+/// entries and the consumer has to fetch the list again.
+#[derive(Debug, Clone, Serialize, bon::Builder)]
+#[non_exhaustive]
+pub struct BlocklistChanged {
+    #[builder(default)]
+    pub changes: Vec<BlocklistChange>,
+    pub action: Option<BlocklistListAction>,
+    pub dhash: Option<String>,
+    pub prev_dhash: Option<String>,
+}
+
 /// An event dispatched by the client to registered handlers.
 ///
 /// # Stability
@@ -1170,6 +1188,9 @@ pub enum Event {
 
     /// A contact changed their default disappearing messages setting.
     DisappearingModeChanged(DisappearingModeChanged),
+
+    /// Our own blocklist changed, on this device or another.
+    BlocklistChanged(BlocklistChanged),
 
     /// Newsletter live update (reaction counts changed, message updates, etc.).
     NewsletterLiveUpdate(NewsletterLiveUpdate),
@@ -1470,6 +1491,7 @@ impl Event {
             Event::ConnectFailure(_) => EventKind::ConnectFailure,
             Event::StreamError(_) => EventKind::StreamError,
             Event::DisappearingModeChanged(_) => EventKind::DisappearingModeChanged,
+            Event::BlocklistChanged(_) => EventKind::BlocklistChanged,
             Event::NewsletterLiveUpdate(_) => EventKind::NewsletterLiveUpdate,
             Event::RawNode(_) => EventKind::RawNode,
             Event::DecryptedPayload(_) => EventKind::DecryptedPayload,
@@ -3274,6 +3296,7 @@ mod tests {
         assert_eq!(EventKind::PushNameBatch as u8, 80);
         assert_eq!(EventKind::LidPnBatch as u8, 81);
         assert_eq!(EventKind::StickerReupload as u8, 82);
+        assert_eq!(EventKind::BlocklistChanged as u8, 83);
     }
 
     #[test]

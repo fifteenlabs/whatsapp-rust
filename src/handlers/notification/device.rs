@@ -3,9 +3,10 @@ use crate::lid_pn_cache::LearningSource;
 use crate::types::events::{Event, EventKind};
 use log::{debug, info, warn};
 use std::sync::Arc;
+use wacore::stanza::blocklist::BlocklistNotification;
 use wacore::stanza::devices::DeviceNotification;
 use wacore::store::traits::{DeviceInfo, DeviceListRecord};
-use wacore::types::events::{DeviceListUpdate, DeviceNotificationInfo};
+use wacore::types::events::{BlocklistChanged, DeviceListUpdate, DeviceNotificationInfo};
 use wacore_binary::NodeRef;
 use wacore_binary::{Jid, JidExt};
 
@@ -60,6 +61,9 @@ pub(crate) async fn handle_account_sync_notification(client: &Arc<Client>, nr: &
     if let Some(devices_node) = nr.get_optional_child_by_tag(&["devices"]) {
         handle_account_sync_devices(client, nr, devices_node).await;
     }
+    if let Some(blocklist) = nr.get_optional_child("blocklist") {
+        handle_account_sync_blocklist(client, blocklist);
+    }
     // WA Web's account_sync parser reads a `<disappearing_mode>` child
     // alongside `<devices>`, and both arms end at the same place the standalone
     // `type="disappearing_mode"` notification does —
@@ -94,6 +98,36 @@ pub(crate) async fn handle_account_sync_notification(client: &Arc<Client>, nr: &
             super::groups::handle_disappearing_mode_notification(client, nr);
         }
     }
+}
+
+/// The blocklist arm of `account_sync`. The server sends it to every device
+/// of the account when one of them blocks or unblocks a contact, so a consumer
+/// that caches the list can apply the delta instead of polling. whatsmeow:
+/// `handleBlocklist`; WA Web applies it through its blocklist collection.
+fn handle_account_sync_blocklist(client: &Arc<Client>, node: &NodeRef<'_>) {
+    let parsed = match BlocklistNotification::try_parse(node) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            warn!(
+                "account_sync blocklist could not be parsed ({e}): {}",
+                wacore::xml::DisplayableNodeRef(node)
+            );
+            return;
+        }
+    };
+    debug!(
+        "Blocklist changed: {} change(s), action={:?}",
+        parsed.changes.len(),
+        parsed.action
+    );
+    client.core.event_bus.dispatch(Event::BlocklistChanged(
+        BlocklistChanged::builder()
+            .changes(parsed.changes)
+            .maybe_action(parsed.action)
+            .maybe_dhash(parsed.dhash)
+            .maybe_prev_dhash(parsed.prev_dhash)
+            .build(),
+    ));
 }
 
 /// Handle encrypt/count notification (PreKey Low).
