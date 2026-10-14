@@ -2,6 +2,7 @@
 //!
 //! This module contains type-safe parsers for incoming notification stanzas.
 
+pub mod blocklist;
 pub mod business;
 pub mod call;
 pub mod connect_failure;
@@ -14,6 +15,7 @@ pub mod notification;
 pub mod receipt;
 pub mod wire_tags;
 
+pub use blocklist::*;
 pub use business::*;
 pub use devices::*;
 pub use groups::*;
