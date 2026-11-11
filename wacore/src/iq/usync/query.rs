@@ -1061,6 +1061,8 @@ pub struct UsyncTextStatusResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub emoji: Option<CompactString>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// How long the status lasts after `last_update_time`; `None` when it
+    /// never expires.
     pub ephemeral_duration_seconds: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_update_time: Option<CompactString>,
@@ -1517,9 +1519,17 @@ fn parse_text_status(node: &NodeRef<'_>) -> Result<UsyncTextStatusResult, anyhow
     let text = attrs
         .optional_string(ATTR_TEXT)
         .map(|value| CompactString::from(value.as_ref()));
+    // A status that never expires carries `-1`, the value WhatsApp Web sends.
     let ephemeral_duration_seconds = attrs
-        .optional_u64(ATTR_EPHEMERAL_DURATION)
-        .map(|value| checked_u32(value, ATTR_EPHEMERAL_DURATION))
+        .optional_string(ATTR_EPHEMERAL_DURATION)
+        .map(|value| {
+            value.parse::<i64>().with_context(|| {
+                format!("'{ATTR_EPHEMERAL_DURATION}' value {value} is not an integer")
+            })
+        })
+        .transpose()?
+        .and_then(|seconds| u64::try_from(seconds).ok())
+        .map(|seconds| checked_u32(seconds, ATTR_EPHEMERAL_DURATION))
         .transpose()?;
     let last_update_time = attrs
         .optional_string(ATTR_LAST_UPDATE_TIME)
@@ -2356,6 +2366,35 @@ mod tests {
             Some(UsyncProtocolResult::Username(UsyncOutcome::Error(error)))
                 if error.code == Some(404)
         ));
+    }
+
+    #[test]
+    fn parser_reads_a_never_expiring_text_status() {
+        let user = NodeBuilder::new(TAG_USER)
+            .attr(ATTR_JID, Jid::lid("100000001"))
+            .children([
+                NodeBuilder::new(UsyncProtocolKind::TextStatus.as_str())
+                    .attr(ATTR_TEXT, "Nothing")
+                    .attr(ATTR_EPHEMERAL_DURATION, "-1")
+                    .attr(ATTR_LAST_UPDATE_TIME, "124")
+                    .build(),
+                NodeBuilder::new(UsyncProtocolKind::Status.as_str())
+                    .string_content("Nothing")
+                    .build(),
+            ])
+            .build();
+        let parsed = parse_usync_response(&response(Vec::new(), vec![user]).as_node_ref()).unwrap();
+        assert!(matches!(
+            parsed.users[0].protocol(UsyncProtocolKind::TextStatus),
+            Some(UsyncProtocolResult::TextStatus(UsyncOutcome::Value(value)))
+                if value.text.as_deref() == Some("Nothing")
+                    && value.ephemeral_duration_seconds.is_none()
+        ));
+        assert!(
+            parsed.users[0]
+                .protocol(UsyncProtocolKind::Status)
+                .is_some()
+        );
     }
 
     #[test]
