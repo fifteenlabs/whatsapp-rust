@@ -147,7 +147,7 @@ impl MessageBuilderExt for wa::Message {
 
 /// Extension trait for wa::Message
 pub trait MessageExt {
-    /// Recursively unwraps ephemeral/view-once/document_with_caption/edited wrappers to get the core message.
+    /// Recursively unwraps ephemeral/view-once/lottie-sticker/document_with_caption/edited wrappers to get the core message.
     fn get_base_message(&self) -> &wa::Message;
     /// Consuming version of [`get_base_message`](Self::get_base_message). Moves the innermost message out of
     /// wrapper types (device_sent, ephemeral, view_once, etc.) without cloning.
@@ -294,6 +294,14 @@ impl MessageExt for wa::Message {
         {
             current = msg;
         }
+        // WA Web's `WAWebStickersParseStickerMessageProto` reads the sticker
+        // from `lottieStickerMessage.message` when present; whatsmeow's
+        // `UnwrapRaw` peels it at this same point in the order.
+        if let Some(wrapper) = current.lottie_sticker_message.as_option()
+            && let Some(msg) = wrapper.message.as_option()
+        {
+            current = msg;
+        }
         if let Some(wrapper) = current.document_with_caption_message.as_option()
             && let Some(msg) = wrapper.message.as_option()
         {
@@ -325,6 +333,7 @@ impl MessageExt for wa::Message {
         peel_wrapper!(view_once_message);
         peel_wrapper!(view_once_message_v2);
         peel_wrapper!(view_once_message_v2_extension);
+        peel_wrapper!(lottie_sticker_message);
         peel_wrapper!(document_with_caption_message);
         peel_wrapper!(edited_message);
         self
@@ -2751,6 +2760,67 @@ mod tests {
         assert_eq!(
             wrapped.get_base_message().conversation.as_deref(),
             Some("inner")
+        );
+    }
+
+    fn lottie_sticker_in_disappearing_chat() -> wa::Message {
+        let sticker = {
+            let mut proto = wa::Message::default();
+            proto.sticker_message = buffa::MessageField::some({
+                let mut proto = wa::message::StickerMessage::default();
+                proto.mimetype = Some("application/was".into());
+                proto.is_lottie = Some(true);
+                proto.context_info = buffa::MessageField::some({
+                    let mut proto = wa::ContextInfo::default().with_stanza_id("quoted-id");
+                    proto.expiration = Some(604_800);
+                    proto
+                });
+                proto
+            });
+            proto
+        };
+        let lottie = {
+            let mut proto = wa::Message::default();
+            proto.lottie_sticker_message = buffa::MessageField::some({
+                let mut proto = wa::message::FutureProofMessage::default();
+                proto.message = buffa::MessageField::some(sticker);
+                proto
+            });
+            proto
+        };
+        let mut proto = wa::Message::default();
+        proto.ephemeral_message = buffa::MessageField::some({
+            let mut proto = wa::message::FutureProofMessage::default();
+            proto.message = buffa::MessageField::some(lottie);
+            proto
+        });
+        proto
+    }
+
+    #[test]
+    fn get_base_message_unwraps_lottie_sticker() {
+        let msg = lottie_sticker_in_disappearing_chat();
+        let base = msg.get_base_message();
+        assert_eq!(
+            base.sticker_message
+                .as_option()
+                .and_then(|s| s.mimetype.as_deref()),
+            Some("application/was")
+        );
+        assert_eq!(
+            msg.context_info().and_then(|c| c.stanza_id.as_deref()),
+            Some("quoted-id")
+        );
+        assert_eq!(base.get_ephemeral_expiration(), Some(604_800));
+    }
+
+    #[test]
+    fn into_base_message_unwraps_lottie_sticker() {
+        let base = lottie_sticker_in_disappearing_chat().into_base_message();
+        assert!(base.lottie_sticker_message.is_unset());
+        assert_eq!(
+            base.sticker_message.as_option().and_then(|s| s.is_lottie),
+            Some(true)
         );
     }
 
