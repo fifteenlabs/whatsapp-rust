@@ -237,12 +237,13 @@ impl StickerOptions {
     /// header, so bubbles don't collapse from missing dimensions.
     pub fn from_webp(data: &[u8]) -> Self {
         let dims = wacore::webp::dimensions(data);
-        let mut opts = Self::default();
-        opts.mimetype = Some("image/webp".to_string());
-        opts.width = dims.map(|(w, _)| w);
-        opts.height = dims.map(|(_, h)| h);
-        opts.is_animated = Some(wacore::webp::is_animated(data));
-        opts
+        Self {
+            mimetype: Some("image/webp".to_string()),
+            width: dims.map(|(w, _)| w),
+            height: dims.map(|(_, h)| h),
+            is_animated: Some(wacore::webp::is_animated(data)),
+            ..Self::default()
+        }
     }
 
     /// Override the default MIME type.
