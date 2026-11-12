@@ -1112,6 +1112,31 @@ pub(crate) fn infer_stanza_metadata(msg: &wa::Message) -> (Option<EditAttribute>
     )
 }
 
+/// Nest a sticker flagged `is_lottie` in `lottie_sticker_message`, the shape
+/// WA Web's `WAWebE2EProtoGenerator` emits as its last encoding step — after
+/// context and the disappearing timer are set on the inner `stickerMessage`.
+/// Callers build, quote and forward the bare sticker (what
+/// `get_base_message` hands back on receive) and never see the wrapper.
+/// `message_context_info` stays top-level, where received lottie stickers
+/// carry it.
+fn wrap_lottie_sticker(message: &mut std::sync::Arc<wa::Message>) {
+    if !message
+        .sticker_message
+        .as_option()
+        .is_some_and(|sticker| sticker.is_lottie == Some(true))
+    {
+        return;
+    }
+    let message = std::sync::Arc::make_mut(message);
+    let mut sticker = wa::Message::default();
+    sticker.sticker_message = std::mem::take(&mut message.sticker_message);
+    message.lottie_sticker_message = buffa::MessageField::some({
+        let mut proto = wa::message::FutureProofMessage::default();
+        proto.message = buffa::MessageField::some(sticker);
+        proto
+    });
+}
+
 // Status posts use the outer wire ID as their content ID. Revokes/reactions
 // instead carry their target in an embedded key and need an operation ID.
 fn status_id_override<'a>(
@@ -1614,6 +1639,7 @@ impl Client {
                 log::warn!("Could not set contextInfo.expiration on this message type");
             }
         }
+        wrap_lottie_sticker(&mut message);
 
         let stanza_type_override = options.stanza_type_override;
         let group_metadata_freshness = options.group_metadata_freshness;
@@ -7400,6 +7426,59 @@ mod tests {
             .collect();
 
         assert_eq!(new_devices.len(), 10);
+    }
+
+    mod lottie_sticker_wrap {
+        use super::*;
+        use std::sync::Arc;
+        use wacore::proto_helpers::MessageExt;
+
+        fn sticker(is_lottie: Option<bool>) -> Arc<wa::Message> {
+            let mut proto = wa::Message::default();
+            proto.sticker_message = buffa::MessageField::some({
+                let mut proto = wa::message::StickerMessage::default();
+                proto.is_lottie = is_lottie;
+                proto.context_info = buffa::MessageField::some(
+                    wa::ContextInfo::default().with_stanza_id("quoted-id"),
+                );
+                proto
+            });
+            proto.message_context_info =
+                buffa::MessageField::some(wa::MessageContextInfo::default());
+            Arc::new(proto)
+        }
+
+        #[test]
+        fn a_lottie_sticker_goes_out_inside_its_wrapper() {
+            let mut message = sticker(Some(true));
+            wrap_lottie_sticker(&mut message);
+            assert!(message.sticker_message.is_unset());
+            assert!(message.message_context_info.is_set());
+            let inner = message
+                .lottie_sticker_message
+                .as_option()
+                .and_then(|w| w.message.as_option())
+                .expect("wrapped sticker");
+            assert!(inner.message_context_info.is_unset());
+            assert_eq!(
+                message.context_info().and_then(|c| c.stanza_id.as_deref()),
+                Some("quoted-id")
+            );
+            assert_eq!(
+                wacore::send::media_type_from_message(&message),
+                Some("sticker")
+            );
+        }
+
+        #[test]
+        fn a_webp_sticker_stays_bare() {
+            for is_lottie in [None, Some(false)] {
+                let mut message = sticker(is_lottie);
+                wrap_lottie_sticker(&mut message);
+                assert!(message.sticker_message.is_set());
+                assert!(message.lottie_sticker_message.is_unset());
+            }
+        }
     }
 
     mod infer_stanza {
