@@ -69,7 +69,7 @@
 //! - `WAWebSchemaPrivacyDisallowedList` (disallowed list types)
 
 use crate::WireEnum;
-use crate::iq::node::{optional_attr, required_child};
+use crate::iq::node::{required_attr, required_child};
 use crate::iq::spec::IqSpec;
 use crate::request::InfoQuery;
 use crate::types::message::AddressingMode;
@@ -189,14 +189,12 @@ pub fn parse_privacy_categories(
 ) -> Result<Vec<PrivacySetting>, anyhow::Error> {
     let mut settings = Vec::new();
     for child in privacy_node.get_children_by_tag("category") {
-        let name = optional_attr(child, "name")
-            .ok_or_else(|| anyhow::anyhow!("missing name in category"))?;
-        let value = optional_attr(child, "value")
-            .ok_or_else(|| anyhow::anyhow!("missing value in category"))?;
+        let name = required_attr(child, "name")?;
+        let value = required_attr(child, "value")?;
 
         settings.push(PrivacySetting {
-            category: PrivacyCategory::from(name.as_ref()),
-            value: PrivacyValue::from(value.as_ref()),
+            category: PrivacyCategory::from(name.as_str()),
+            value: PrivacyValue::from(value.as_str()),
         });
     }
     Ok(settings)
@@ -319,9 +317,7 @@ impl IqSpec for PrivacyDisallowedListSpec {
         let Some(list) = privacy_node.get_optional_child("list") else {
             return Ok(PrivacyDisallowedList::default());
         };
-        let dhash = optional_attr(list, "dhash")
-            .map(|hash| hash.into_owned())
-            .ok_or_else(|| anyhow::anyhow!("missing dhash in disallowed list"))?;
+        let dhash = required_attr(list, "dhash")?;
         let users = list
             .get_children_by_tag("user")
             .map(|user| {
@@ -762,7 +758,7 @@ mod tests {
         let err = spec
             .parse_response(&response.as_node_ref())
             .expect_err("a nameless category cannot be mapped to a setting");
-        assert!(err.to_string().contains("missing name in category"));
+        assert!(err.to_string().contains("missing required attribute name"));
     }
 
     #[test]
@@ -778,7 +774,7 @@ mod tests {
         let err = spec
             .parse_response(&response.as_node_ref())
             .expect_err("a valueless category cannot be mapped to a setting");
-        assert!(err.to_string().contains("missing value in category"));
+        assert!(err.to_string().contains("missing required attribute value"));
     }
 
     #[test]
@@ -801,7 +797,7 @@ mod tests {
         let err = spec
             .parse_response(&response.as_node_ref())
             .expect_err("one malformed category fails the whole response");
-        assert!(err.to_string().contains("missing value in category"));
+        assert!(err.to_string().contains("missing required attribute value"));
     }
 
     #[test]
@@ -943,7 +939,7 @@ mod tests {
 
     fn attr_str<'a>(node: &'a Node, key: &str) -> Option<Cow<'a, str>> {
         let node_ref = node.as_node_ref();
-        optional_attr(&node_ref, key).map(|c| Cow::Owned(c.into_owned()))
+        crate::iq::node::optional_attr(&node_ref, key).map(|c| Cow::Owned(c.into_owned()))
     }
 
     #[test]
