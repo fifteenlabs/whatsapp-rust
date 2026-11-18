@@ -329,6 +329,7 @@ pub enum EventKind {
     LidPnBatch,
     StickerReupload,
     BlocklistChanged,
+    PrivacySettingsChanged,
     // Append new kinds here. The list and capacity guard are generated/derived.
 }
 }
@@ -1039,6 +1040,19 @@ pub struct BlocklistChanged {
     pub prev_dhash: Option<String>,
 }
 
+/// One or more of our own privacy settings changed on another device.
+///
+/// Sent by the server as a `<privacy>` child of
+/// `<notification type="account_sync">`, carrying the categories that changed
+/// with their new values. whatsmeow: `handlePrivacySettingsNotification`. A
+/// category now at `contact_blacklist` says nothing about who is on its list;
+/// a consumer showing the list fetches it again.
+#[derive(Debug, Clone, Serialize, bon::Builder)]
+#[non_exhaustive]
+pub struct PrivacySettingsChanged {
+    pub settings: Vec<crate::iq::privacy::PrivacySetting>,
+}
+
 /// An event dispatched by the client to registered handlers.
 ///
 /// # Stability
@@ -1200,6 +1214,9 @@ pub enum Event {
 
     /// Our own blocklist changed, on this device or another.
     BlocklistChanged(BlocklistChanged),
+
+    /// Our own privacy settings changed on another device.
+    PrivacySettingsChanged(PrivacySettingsChanged),
 
     /// Newsletter live update (reaction counts changed, message updates, etc.).
     NewsletterLiveUpdate(NewsletterLiveUpdate),
@@ -1501,6 +1518,7 @@ impl Event {
             Event::StreamError(_) => EventKind::StreamError,
             Event::DisappearingModeChanged(_) => EventKind::DisappearingModeChanged,
             Event::BlocklistChanged(_) => EventKind::BlocklistChanged,
+            Event::PrivacySettingsChanged(_) => EventKind::PrivacySettingsChanged,
             Event::NewsletterLiveUpdate(_) => EventKind::NewsletterLiveUpdate,
             Event::RawNode(_) => EventKind::RawNode,
             Event::DecryptedPayload(_) => EventKind::DecryptedPayload,
@@ -3306,12 +3324,16 @@ mod tests {
         assert_eq!(EventKind::LidPnBatch as u8, 81);
         assert_eq!(EventKind::StickerReupload as u8, 82);
         assert_eq!(EventKind::BlocklistChanged as u8, 83);
+        assert_eq!(EventKind::PrivacySettingsChanged as u8, 84);
     }
 
     #[test]
     fn event_kind_list_is_discriminant_ordered() {
-        assert_eq!(EventKind::ALL.len(), 84);
-        assert_eq!(EventKind::ALL.last(), Some(&EventKind::BlocklistChanged));
+        assert_eq!(EventKind::ALL.len(), 85);
+        assert_eq!(
+            EventKind::ALL.last(),
+            Some(&EventKind::PrivacySettingsChanged)
+        );
         assert!(EventKind::ALL.len() <= EventKind::CAPACITY as usize);
         for (i, &kind) in EventKind::ALL.iter().enumerate() {
             assert_eq!(kind as u8 as usize, i);

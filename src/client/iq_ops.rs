@@ -124,6 +124,18 @@ impl Client {
             .await
     }
 
+    /// Fetch the users a `contact_blacklist` category excludes, with the
+    /// `dhash` the next [`Self::set_privacy_disallowed_list`] must quote.
+    ///
+    /// Only `Last`, `Profile`, `Status`, `GroupAdd` keep such a list.
+    pub async fn fetch_privacy_disallowed_list(
+        &self,
+        category: wacore::iq::privacy::PrivacyCategory,
+    ) -> Result<wacore::iq::privacy::PrivacyDisallowedList, crate::request::IqError> {
+        use wacore::iq::privacy::PrivacyDisallowedListSpec;
+        self.execute(PrivacyDisallowedListSpec::new(category)).await
+    }
+
     /// Set a privacy setting to `contact_blacklist` with a disallowed list update.
     ///
     /// Only `Last`, `Profile`, `Status`, `GroupAdd` support disallowed lists.

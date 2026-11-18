@@ -6,7 +6,9 @@ use std::sync::Arc;
 use wacore::stanza::blocklist::BlocklistNotification;
 use wacore::stanza::devices::DeviceNotification;
 use wacore::store::traits::{DeviceInfo, DeviceListRecord};
-use wacore::types::events::{BlocklistChanged, DeviceListUpdate, DeviceNotificationInfo};
+use wacore::types::events::{
+    BlocklistChanged, DeviceListUpdate, DeviceNotificationInfo, PrivacySettingsChanged,
+};
 use wacore_binary::NodeRef;
 use wacore_binary::diagnostics::ObservedId;
 use wacore_binary::{Jid, JidExt};
@@ -64,6 +66,9 @@ pub(crate) async fn handle_account_sync_notification(client: &Arc<Client>, nr: &
     }
     if let Some(blocklist) = nr.get_optional_child("blocklist") {
         handle_account_sync_blocklist(client, blocklist);
+    }
+    if let Some(privacy) = nr.get_optional_child("privacy") {
+        handle_account_sync_privacy(client, privacy);
     }
     // WA Web's account_sync parser reads a `<disappearing_mode>` child
     // alongside `<devices>`, and both arms end at the same place the standalone
@@ -129,6 +134,37 @@ fn handle_account_sync_blocklist(client: &Arc<Client>, node: &NodeRef<'_>) {
             .maybe_prev_dhash(parsed.prev_dhash)
             .build(),
     ));
+}
+
+/// The privacy arm of `account_sync`: another device of the account changed a
+/// privacy setting. whatsmeow: `handlePrivacySettingsNotification`. The stanza
+/// names the categories with their new values, so the consumer can apply the
+/// change without a round trip, and refetch only a `contact_blacklist` list.
+fn handle_account_sync_privacy(client: &Arc<Client>, node: &NodeRef<'_>) {
+    let settings = match wacore::iq::privacy::parse_privacy_categories(node) {
+        Ok(settings) => settings,
+        Err(e) => {
+            warn!(
+                "account_sync privacy could not be parsed ({e}): {}",
+                wacore::xml::DisplayableNodeRef(node)
+            );
+            return;
+        }
+    };
+    if settings.is_empty() {
+        debug!("account_sync privacy named no category; nothing to apply");
+        return;
+    }
+    debug!(
+        "Privacy settings changed: {} categor(y/ies)",
+        settings.len()
+    );
+    client
+        .core
+        .event_bus
+        .dispatch(Event::PrivacySettingsChanged(
+            PrivacySettingsChanged::builder().settings(settings).build(),
+        ));
 }
 
 /// Handle encrypt/count notification (PreKey Low).

@@ -25,6 +25,23 @@
 //!   </privacy>
 //! </iq>
 //!
+//! <!-- GET the users excluded by a `contact_blacklist` category
+//!      (WASmaxPrivacyGetContactBlacklistRPC, LID variant) -->
+//! <iq xmlns="privacy" type="get" to="s.whatsapp.net" id="...">
+//!   <privacy addressing_mode="lid">
+//!     <list name="{category}" value="contact_blacklist"/>
+//!   </privacy>
+//! </iq>
+//!
+//! <!-- GET response; <list> is absent when the category has no list yet -->
+//! <iq from="s.whatsapp.net" id="..." type="result">
+//!   <privacy addressing_mode="lid">
+//!     <list dhash="...">
+//!       <user jid="{lid}" pn_jid="{pn}"/>
+//!     </list>
+//!   </privacy>
+//! </iq>
+//!
 //! <!-- SET request (simple) -->
 //! <iq xmlns="privacy" type="set" to="s.whatsapp.net" id="...">
 //!   <privacy>
@@ -45,14 +62,18 @@
 //!
 //! Verified against WhatsApp Web JS:
 //! - `WAWebQueryPrivacySettingsJob` (GET parsing)
+//! - `WASmaxPrivacyGetContactBlacklistRPC` / `WAWebQueryPrivacyDisallowedListPnJob`
+//!   (disallowed list GET; whatspec `iq` domain, WA 2.3000.1052559453)
 //! - `WAWebSetPrivacyJob` (SET building)
 //! - `WAWebPrivacySettings` (value enums)
 //! - `WAWebSchemaPrivacyDisallowedList` (disallowed list types)
 
 use crate::WireEnum;
+use crate::iq::node::{optional_attr, required_child};
 use crate::iq::spec::IqSpec;
 use crate::request::InfoQuery;
 use crate::types::message::AddressingMode;
+use serde::Serialize;
 use wacore_binary::builder::NodeBuilder;
 use wacore_binary::{Jid, Server};
 use wacore_binary::{Node, NodeContent, NodeRef};
@@ -151,10 +172,34 @@ pub enum PrivacyValue {
     Other(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PrivacySetting {
     pub category: PrivacyCategory,
     pub value: PrivacyValue,
+}
+
+/// Read the `<category name value/>` children of a `<privacy>` node.
+///
+/// The same shape arrives in the GET response and, when another device of the
+/// account changes a setting, as the `<privacy>` child of
+/// `<notification type="account_sync">` (whatsmeow:
+/// `handlePrivacySettingsNotification`), so both parse through here.
+pub fn parse_privacy_categories(
+    privacy_node: &NodeRef<'_>,
+) -> Result<Vec<PrivacySetting>, anyhow::Error> {
+    let mut settings = Vec::new();
+    for child in privacy_node.get_children_by_tag("category") {
+        let name = optional_attr(child, "name")
+            .ok_or_else(|| anyhow::anyhow!("missing name in category"))?;
+        let value = optional_attr(child, "value")
+            .ok_or_else(|| anyhow::anyhow!("missing value in category"))?;
+
+        settings.push(PrivacySetting {
+            category: PrivacyCategory::from(name.as_ref()),
+            value: PrivacyValue::from(value.as_ref()),
+        });
+    }
+    Ok(settings)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -199,24 +244,99 @@ impl IqSpec for PrivacySettingsSpec {
     }
 
     fn parse_response(&self, response: &NodeRef<'_>) -> Result<Self::Response, anyhow::Error> {
-        use crate::iq::node::{optional_attr, required_child};
-
         let privacy_node = required_child(response, "privacy")?;
-
-        let mut settings = Vec::new();
-        for child in privacy_node.get_children_by_tag("category") {
-            let name = optional_attr(child, "name")
-                .ok_or_else(|| anyhow::anyhow!("missing name in category"))?;
-            let value = optional_attr(child, "value")
-                .ok_or_else(|| anyhow::anyhow!("missing value in category"))?;
-
-            settings.push(PrivacySetting {
-                category: PrivacyCategory::from(name.as_ref()),
-                value: PrivacyValue::from(value.as_ref()),
-            });
-        }
-
+        let settings = parse_privacy_categories(privacy_node)?;
         Ok(PrivacySettingsResponse { settings })
+    }
+}
+
+/// One user a `contact_blacklist` category excludes.
+///
+/// The server addresses the list by LID (`jid`) and, where it knows one,
+/// attaches the phone number (`pn_jid`) or a username; a `<user>` with neither
+/// is still an entry, since the hash covers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisallowedListUser {
+    pub jid: Option<Jid>,
+    pub pn_jid: Option<Jid>,
+    pub username: Option<String>,
+}
+
+/// The users a `contact_blacklist` category excludes, with the hash a later
+/// [`DisallowedListUpdate`] must quote.
+///
+/// `dhash` is `None` when the server has no list for the category yet, which
+/// is how WA Web's `prepareDisallowedList` starts one: the first update goes
+/// out without a hash.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrivacyDisallowedList {
+    pub dhash: Option<String>,
+    pub users: Vec<DisallowedListUser>,
+}
+
+/// Fetches the users excluded by one `contact_blacklist` category.
+///
+/// WA Web keeps these in `WAWebSchemaPrivacyDisallowedList` and refreshes them
+/// through `WASmaxPrivacyGetContactBlacklistRPC`; this is that request in its
+/// LID variant, so the reply carries both identifiers of each user.
+#[derive(Debug, Clone)]
+pub struct PrivacyDisallowedListSpec {
+    pub category: PrivacyCategory,
+}
+
+impl PrivacyDisallowedListSpec {
+    pub fn new(category: PrivacyCategory) -> Self {
+        debug_assert!(
+            category.supports_disallowed_list(),
+            "{:?} does not support disallowed lists",
+            category
+        );
+        Self { category }
+    }
+}
+
+impl IqSpec for PrivacyDisallowedListSpec {
+    type Response = PrivacyDisallowedList;
+
+    fn build_iq(&self) -> InfoQuery<'static> {
+        InfoQuery::get(
+            PRIVACY_NAMESPACE,
+            Jid::new("", Server::Pn),
+            Some(NodeContent::Nodes(vec![
+                NodeBuilder::new("privacy")
+                    .attr("addressing_mode", AddressingMode::Lid.as_str())
+                    .children([NodeBuilder::new("list")
+                        .attr("name", self.category.as_str())
+                        .attr("value", PrivacyValue::ContactBlacklist.as_str())
+                        .build()])
+                    .build(),
+            ])),
+        )
+    }
+
+    fn parse_response(&self, response: &NodeRef<'_>) -> Result<Self::Response, anyhow::Error> {
+        let privacy_node = required_child(response, "privacy")?;
+        let Some(list) = privacy_node.get_optional_child("list") else {
+            return Ok(PrivacyDisallowedList::default());
+        };
+        let dhash = optional_attr(list, "dhash")
+            .map(|hash| hash.into_owned())
+            .ok_or_else(|| anyhow::anyhow!("missing dhash in disallowed list"))?;
+        let users = list
+            .get_children_by_tag("user")
+            .map(|user| {
+                let mut attrs = user.attrs();
+                DisallowedListUser {
+                    jid: attrs.optional_jid("jid"),
+                    pn_jid: attrs.optional_jid("pn_jid"),
+                    username: attrs.optional_string("username").map(|u| u.into_owned()),
+                }
+            })
+            .collect();
+        Ok(PrivacyDisallowedList {
+            dhash: Some(dhash),
+            users,
+        })
     }
 }
 
@@ -233,8 +353,11 @@ pub struct DisallowedListUserEntry {
 #[derive(Debug, Clone)]
 pub struct DisallowedListUpdate {
     /// Hash of the current disallowed list for conflict detection (409 handling).
-    /// Server returns updated dhash in the response.
-    pub dhash: String,
+    /// Server returns updated dhash in the response. `None` when the category
+    /// has no list yet: WA Web's `prepareDisallowedList` sends the first update
+    /// without one, and [`PrivacyDisallowedListSpec`] reports that state as
+    /// `dhash: None`.
+    pub dhash: Option<String>,
     /// User additions/removals.
     pub users: Vec<DisallowedListUserEntry>,
 }
@@ -294,7 +417,9 @@ impl IqSpec for SetPrivacySettingSpec {
         let mut privacy_node = NodeBuilder::new("privacy");
 
         if let Some(ref update) = self.disallowed_list {
-            category_node = category_node.attr("dhash", &*update.dhash);
+            if let Some(dhash) = &update.dhash {
+                category_node = category_node.attr("dhash", &**dhash);
+            }
 
             let user_nodes: Vec<Node> = update
                 .users
@@ -513,6 +638,100 @@ mod tests {
         assert_eq!(result.settings[8].value, PrivacyValue::Off);
     }
 
+    #[test]
+    fn disallowed_list_spec_asks_for_one_category_by_lid() {
+        let spec = PrivacyDisallowedListSpec::new(PrivacyCategory::Last);
+        let iq = spec.build_iq();
+
+        assert_eq!(iq.namespace, PRIVACY_NAMESPACE);
+        assert_eq!(iq.query_type, crate::request::InfoQueryType::Get);
+        let Some(NodeContent::Nodes(nodes)) = &iq.content else {
+            panic!("Expected NodeContent::Nodes");
+        };
+        let privacy = &nodes[0];
+        assert_eq!(privacy.tag, "privacy");
+        assert_eq!(
+            privacy.attrs.get("addressing_mode").map(|v| v.to_string()),
+            Some("lid".to_string())
+        );
+        let list = privacy.get_optional_child("list").expect("a <list> child");
+        assert_eq!(
+            list.attrs.get("name").map(|v| v.to_string()),
+            Some("last".to_string())
+        );
+        assert_eq!(
+            list.attrs.get("value").map(|v| v.to_string()),
+            Some("contact_blacklist".to_string())
+        );
+    }
+
+    #[test]
+    fn disallowed_list_parse_reads_hash_and_both_identifiers() {
+        let spec = PrivacyDisallowedListSpec::new(PrivacyCategory::Profile);
+        let response = NodeBuilder::new("iq")
+            .attr("type", "result")
+            .children([NodeBuilder::new("privacy")
+                .attr("addressing_mode", "lid")
+                .children([NodeBuilder::new("list")
+                    .attr("dhash", "2:abc")
+                    .children([
+                        NodeBuilder::new("user")
+                            .attr("jid", "123456789012345@lid")
+                            .attr("pn_jid", "12025550199@s.whatsapp.net")
+                            .build(),
+                        NodeBuilder::new("user")
+                            .attr("jid", "543210987654321@lid")
+                            .build(),
+                    ])
+                    .build()])
+                .build()])
+            .build();
+
+        let list = spec.parse_response(&response.as_node_ref()).unwrap();
+        assert_eq!(list.dhash.as_deref(), Some("2:abc"));
+        assert_eq!(list.users.len(), 2);
+        assert_eq!(
+            list.users[0].jid,
+            Some("123456789012345@lid".parse::<Jid>().unwrap())
+        );
+        assert_eq!(
+            list.users[0].pn_jid,
+            Some("12025550199@s.whatsapp.net".parse::<Jid>().unwrap())
+        );
+        assert_eq!(list.users[1].pn_jid, None);
+    }
+
+    #[test]
+    fn disallowed_list_without_a_list_is_empty_and_hashless() {
+        let spec = PrivacyDisallowedListSpec::new(PrivacyCategory::Status);
+        let response = NodeBuilder::new("iq")
+            .attr("type", "result")
+            .children([NodeBuilder::new("privacy")
+                .attr("addressing_mode", "lid")
+                .build()])
+            .build();
+
+        let list = spec.parse_response(&response.as_node_ref()).unwrap();
+        assert_eq!(list, PrivacyDisallowedList::default());
+    }
+
+    #[test]
+    fn disallowed_list_without_a_hash_is_rejected() {
+        let spec = PrivacyDisallowedListSpec::new(PrivacyCategory::GroupAdd);
+        let response = NodeBuilder::new("iq")
+            .attr("type", "result")
+            .children([NodeBuilder::new("privacy")
+                .children([NodeBuilder::new("list")
+                    .children([NodeBuilder::new("user")
+                        .attr("jid", "123456789012345@lid")
+                        .build()])
+                    .build()])
+                .build()])
+            .build();
+
+        assert!(spec.parse_response(&response.as_node_ref()).is_err());
+    }
+
     // --- Malformed response tests ---
     //
     // Every field below is server-controlled, so each rejection branch needs a
@@ -724,7 +943,7 @@ mod tests {
 
     fn attr_str<'a>(node: &'a Node, key: &str) -> Option<Cow<'a, str>> {
         let node_ref = node.as_node_ref();
-        crate::iq::node::optional_attr(&node_ref, key).map(|c| Cow::Owned(c.into_owned()))
+        optional_attr(&node_ref, key).map(|c| Cow::Owned(c.into_owned()))
     }
 
     #[test]
@@ -758,7 +977,7 @@ mod tests {
         let spec = SetPrivacySettingSpec::with_disallowed_list(
             PrivacyCategory::Profile,
             DisallowedListUpdate {
-                dhash: "abc123".to_string(),
+                dhash: Some("abc123".to_string()),
                 users: vec![
                     DisallowedListUserEntry {
                         action: DisallowedListAction::Add,

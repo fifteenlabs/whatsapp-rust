@@ -542,6 +542,51 @@ mod tests {
         assert_eq!(changed.changes[1].action, BlocklistAction::Unblock);
     }
 
+    // ── `account_sync` / `<privacy>` ─ the phone changed a privacy setting
+    // (whatsmeow `handlePrivacySettingsNotification`). The categories and
+    // values travel in the stanza, so the consumer applies them directly.
+
+    #[tokio::test]
+    async fn account_sync_privacy_reaches_the_consumer() {
+        use wacore::iq::privacy::{PrivacyCategory, PrivacyValue};
+
+        let (client, collector) = client_with_collector().await;
+
+        let notif = NodeBuilder::new("notification")
+            .attr("type", NotificationType::AccountSync.as_str())
+            .attr("from", OWN_PN)
+            .attr("id", "acct-sync-privacy-1")
+            .attr("t", "1704067200")
+            .children([NodeBuilder::new("privacy")
+                .children([
+                    NodeBuilder::new("category")
+                        .attr("name", "last")
+                        .attr("value", "contact_blacklist")
+                        .build(),
+                    NodeBuilder::new("category")
+                        .attr("name", "readreceipts")
+                        .attr("value", "none")
+                        .build(),
+                ])
+                .build()])
+            .build();
+        handle_notification_impl(&client, node_to_arc(notif)).await;
+
+        let changed = collector
+            .events()
+            .into_iter()
+            .find_map(|event| match event.as_ref() {
+                Event::PrivacySettingsChanged(changed) => Some(changed.clone()),
+                _ => None,
+            })
+            .expect("an account_sync privacy change must reach the consumer");
+        assert_eq!(changed.settings.len(), 2);
+        assert_eq!(changed.settings[0].category, PrivacyCategory::Last);
+        assert_eq!(changed.settings[0].value, PrivacyValue::ContactBlacklist);
+        assert_eq!(changed.settings[1].category, PrivacyCategory::ReadReceipts);
+        assert_eq!(changed.settings[1].value, PrivacyValue::None);
+    }
+
     /// A type a subsystem claims must not be shadowed by a core arm. The seam
     /// is consulted only in the fallthrough, so an arm added here later would
     /// take the stanza and the subsystem would silently stop seeing it. The
